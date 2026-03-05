@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^cd C:\\\\Users\\\\Rey\\\\Desktop\\\\reysoft\\\\backend; node index\\.js$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

@@ -1,0 +1,67 @@
+{
+  "name": "reysoft-coco-cana-desktop",
+  "version": "1.0.0",
+  "main": "main.js",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Reyleche/ReySoft"
+  },
+  "scripts": {
+    "start": "electron .",
+    "build:ui": "cd ../frontend && npm install && npm run build",
+    "build:backend": "cd ../backend && npm install",
+    "prepare:renderer": "node scripts/copy-renderer.js",
+    "dist": "npm run build:ui && npm run build:backend && npm run prepare:renderer && electron-builder --win"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.0"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.reysoft.cococana",
+    "productName": "ReySoft Coco&Caña",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "splash.html"
+    ],
+    "extraResources": [
+      {
+        "from": "renderer",
+        "to": "renderer"
+      },
+      {
+        "from": "../backend",
+        "to": "backend"
+      },
+      {
+        "from": "installer",
+        "to": "installer"
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "../frontend/src/assets/coco.ico"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Reyleche",
+        "repo": "ReySoft"
+      }
+    ],
+    "nsis": {
+      "oneClick": false,
+      "perMachine": true,
+      "allowToChangeInstallationDirectory": true,
+      "include": "installer/installer.nsh"
+    }
+  }
+}

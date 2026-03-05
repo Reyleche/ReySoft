@@ -1,0 +1,20 @@
+/* styles.css */
+@import "primeicons/primeicons.css";
+
+body, html {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: #f3f4f6; /* Gris muy suave, elegante para la vista */
+    overflow: hidden; /* Evita barras de desplazamiento feas */
+}
+
+/* Estilo para botones estilo RunFood/Tablet */
+.btn-user {
+    transition: transform 0.2s;
+    cursor: pointer;
+}
+.btn-user:active {
+    transform: scale(0.95); /* Efecto de presionar */
+}
