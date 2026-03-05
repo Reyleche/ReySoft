@@ -70,6 +70,9 @@
             <button type="button" (click)="cambiarVista('facturacion')" [class.active]="vistaActual === 'facturacion'">
                 <i class="pi pi-file-edit"></i> Facturación
             </button>
+            <button type="button" (click)="cambiarVista('sincronizacion')" [class.active]="vistaActual === 'sincronizacion'">
+                <i class="pi pi-sync"></i> Sincronización
+            </button>
         </nav>
 
         <button type="button" class="btn-logout" (click)="logout()">
@@ -2180,6 +2183,130 @@
             <div class="imagen-modal-content" (click)="$event.stopPropagation()">
                 <button class="imagen-modal-close" (click)="cerrarImagenModal()"><i class="pi pi-times"></i></button>
                 <img [src]="imagenModalUrl" alt="Factura / Comprobante" class="imagen-modal-img" />
+            </div>
+        </div>
+
+        <!-- ==================== VISTA SINCRONIZACIÓN ==================== -->
+        <div *ngIf="vistaActual === 'sincronizacion'" class="sync-view fade-in">
+            <div class="sync-header">
+                <h3><i class="pi pi-sync"></i> Sincronización de Base de Datos</h3>
+                <p class="sync-subtitle">Respaldos automáticos vía OneDrive para mantener tus datos sincronizados entre equipos</p>
+            </div>
+
+            <!-- Mensajes -->
+            <div class="sync-alert sync-alert-success" *ngIf="syncMensaje">{{ syncMensaje }}</div>
+            <div class="sync-alert sync-alert-error" *ngIf="syncError">{{ syncError }}</div>
+
+            <!-- Config y Acciones -->
+            <div class="sync-grid">
+                <!-- Panel: Estado -->
+                <div class="sync-panel sync-panel-status">
+                    <div class="sync-panel-header">
+                        <i class="pi pi-cloud" style="color:#0078d4;font-size:1.4rem"></i>
+                        <h4>Estado de Sincronización</h4>
+                    </div>
+                    <div class="sync-status-row">
+                        <span class="sync-label">OneDrive detectado:</span>
+                        <span [class]="syncConfig.oneDriveDetected ? 'sync-badge sync-badge-ok' : 'sync-badge sync-badge-warn'">
+                            {{ syncConfig.oneDriveDetected ? '✅ Sí' : '⚠️ No detectado' }}
+                        </span>
+                    </div>
+                    <div class="sync-status-row">
+                        <span class="sync-label">Auto-backup al cerrar:</span>
+                        <label class="sync-toggle">
+                            <input type="checkbox" [checked]="syncConfig.autoBackup" (change)="toggleAutoBackup()">
+                            <span class="sync-toggle-slider"></span>
+                        </label>
+                    </div>
+                    <div class="sync-status-row">
+                        <span class="sync-label">Carpeta de backups:</span>
+                        <span class="sync-folder-path">{{ syncBackupFolder || '(no configurada)' }}</span>
+                    </div>
+                    <div class="sync-folder-config">
+                        <input type="text" [(ngModel)]="syncBackupFolder" placeholder="Ruta de carpeta (ej: C:\Users\...\OneDrive\Backups_CocoCana)" class="sync-input">
+                        <button class="btn-sync-small" (click)="guardarSyncFolder()"><i class="pi pi-save"></i> Guardar</button>
+                    </div>
+                    <div class="sync-status-row" *ngIf="syncBackups.length > 0">
+                        <span class="sync-label">Último backup:</span>
+                        <span class="sync-value">{{ formatFechaBackup(syncBackups[0].fecha) }}</span>
+                    </div>
+                    <div class="sync-status-row">
+                        <span class="sync-label">Total backups:</span>
+                        <span class="sync-value">{{ syncBackups.length }}</span>
+                    </div>
+                </div>
+
+                <!-- Panel: Acciones Rápidas -->
+                <div class="sync-panel sync-panel-actions">
+                    <div class="sync-panel-header">
+                        <i class="pi pi-bolt" style="color:#f59e0b;font-size:1.4rem"></i>
+                        <h4>Acciones Rápidas</h4>
+                    </div>
+                    <button class="btn-sync-action btn-sync-backup" (click)="crearBackupManual()" [disabled]="syncCargando">
+                        <i class="pi pi-download"></i>
+                        <div>
+                            <strong>{{ syncCargando ? 'Creando backup...' : 'Crear Backup Ahora' }}</strong>
+                            <small>Genera un respaldo de toda la base de datos</small>
+                        </div>
+                    </button>
+                    <button class="btn-sync-action btn-sync-restore" (click)="syncFileInput.click()" [disabled]="syncRestaurando">
+                        <i class="pi pi-upload"></i>
+                        <div>
+                            <strong>{{ syncRestaurando ? 'Restaurando...' : 'Restaurar desde Archivo' }}</strong>
+                            <small>Sube un archivo .sql para restaurar</small>
+                        </div>
+                    </button>
+                    <input #syncFileInput type="file" accept=".sql" style="display:none" (change)="restaurarDesdeArchivo($event)">
+                    <div class="sync-info-box">
+                        <i class="pi pi-info-circle"></i>
+                        <div>
+                            <strong>¿Cómo funciona?</strong>
+                            <p>Al cerrar la app se crea un backup automático en tu carpeta de OneDrive. Esta carpeta se sincroniza con la nube. En tu otra laptop, puedes restaurar desde esa misma carpeta.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Lista de Backups -->
+            <div class="sync-panel sync-panel-list">
+                <div class="sync-panel-header">
+                    <i class="pi pi-list" style="color:#6366f1;font-size:1.4rem"></i>
+                    <h4>Backups Disponibles</h4>
+                    <button class="btn-sync-small" (click)="cargarSyncBackups()" style="margin-left:auto"><i class="pi pi-refresh"></i> Refrescar</button>
+                </div>
+                <div *ngIf="syncBackups.length === 0" class="sync-empty">
+                    <i class="pi pi-inbox" style="font-size:2rem;color:#aaa"></i>
+                    <p>No hay backups disponibles aún</p>
+                </div>
+                <table class="sync-table" *ngIf="syncBackups.length > 0">
+                    <thead>
+                        <tr>
+                            <th>Archivo</th>
+                            <th>Fecha</th>
+                            <th>Tamaño</th>
+                            <th>Acciones</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr *ngFor="let b of syncBackups; let i = index">
+                            <td class="sync-filename">
+                                <i class="pi pi-file" style="color:#6366f1"></i>
+                                {{ b.nombre }}
+                                <span class="sync-badge sync-badge-ok" *ngIf="i === 0">Más reciente</span>
+                            </td>
+                            <td>{{ formatFechaBackup(b.fecha) }}</td>
+                            <td>{{ formatBytes(b.size) }}</td>
+                            <td class="sync-actions-cell">
+                                <button class="btn-sync-icon btn-sync-icon-restore" (click)="restaurarDesdeNombre(b.nombre)" title="Restaurar este backup" [disabled]="syncRestaurando">
+                                    <i class="pi pi-replay"></i>
+                                </button>
+                                <button class="btn-sync-icon btn-sync-icon-delete" (click)="eliminarBackupSync(b.nombre)" title="Eliminar">
+                                    <i class="pi pi-trash"></i>
+                                </button>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
             </div>
         </div>
 

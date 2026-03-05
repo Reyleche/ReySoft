@@ -417,4 +417,35 @@ export class ApiService {
   actualizarFacturaSecuencia(payload: any): Observable<any> {
     return this.http.put(`${this.apiUrl}/config/factura-secuencia`, payload);
   }
+
+  // ========== SINCRONIZACIÓN ==========
+  getSyncConfig(): Observable<any> {
+    return this.http.get(`${this.apiUrl}/sync/config`);
+  }
+
+  guardarSyncConfig(payload: any): Observable<any> {
+    return this.http.post(`${this.apiUrl}/sync/config`, payload);
+  }
+
+  crearBackup(): Observable<any> {
+    return this.http.post(`${this.apiUrl}/sync/backup`, {});
+  }
+
+  listarBackups(): Observable<any> {
+    return this.http.get(`${this.apiUrl}/sync/backups`);
+  }
+
+  restaurarBackupArchivo(file: File): Observable<any> {
+    const fd = new FormData();
+    fd.append('archivo', file);
+    return this.http.post(`${this.apiUrl}/sync/restaurar`, fd);
+  }
+
+  restaurarBackupNombre(fileName: string): Observable<any> {
+    return this.http.post(`${this.apiUrl}/sync/restaurar`, { fileName });
+  }
+
+  eliminarBackup(nombre: string): Observable<any> {
+    return this.http.delete(`${this.apiUrl}/sync/backup/${encodeURIComponent(nombre)}`);
+  }
 }

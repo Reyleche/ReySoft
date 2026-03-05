@@ -375,6 +375,15 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
   };
   private logoBase64: string = '';
 
+  // ========== SINCRONIZACIÓN ==========
+  syncConfig: any = { backupFolder: '', autoBackup: true, oneDriveDetected: '', backupFolderResolved: '' };
+  syncBackups: any[] = [];
+  syncCargando: boolean = false;
+  syncMensaje: string = '';
+  syncError: string = '';
+  syncRestaurando: boolean = false;
+  syncBackupFolder: string = '';
+
   constructor(
     private router: Router,
     private auth: AuthService,
@@ -496,6 +505,10 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
     if (vista === 'facturacion') {
       this.cargarFacturas();
       this.cargarConfigImpresora();
+    }
+    if (vista === 'sincronizacion') {
+      this.cargarSyncConfig();
+      this.cargarSyncBackups();
     }
   }
 
@@ -3337,5 +3350,130 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
   ${factura.usuario ? `<div class="center" style="font-size:9px;color:#999;margin-top:2px">Atendido por: ${factura.usuario}</div>` : ''}
 </body>
 </html>`;
+  }
+
+  // ========== SINCRONIZACIÓN ==========
+  cargarSyncConfig() {
+    this.api.getSyncConfig().subscribe({
+      next: (cfg: any) => {
+        this.syncConfig = cfg;
+        this.syncBackupFolder = cfg.backupFolderResolved || '';
+      },
+      error: () => this.syncError = 'Error al cargar configuración de sync'
+    });
+  }
+
+  cargarSyncBackups() {
+    this.api.listarBackups().subscribe({
+      next: (data: any) => {
+        this.syncBackups = data.backups || [];
+        this.syncBackupFolder = data.folder || this.syncBackupFolder;
+      },
+      error: () => this.syncError = 'Error al cargar backups'
+    });
+  }
+
+  crearBackupManual() {
+    this.syncCargando = true;
+    this.syncMensaje = '';
+    this.syncError = '';
+    this.api.crearBackup().subscribe({
+      next: (res: any) => {
+        this.syncCargando = false;
+        this.syncMensaje = `✅ Backup creado: ${res.fileName} (${this.formatBytes(res.size)})`;
+        this.cargarSyncBackups();
+      },
+      error: (err: any) => {
+        this.syncCargando = false;
+        this.syncError = err?.error?.error || 'Error al crear backup';
+      }
+    });
+  }
+
+  restaurarDesdeArchivo(event: any) {
+    const file = event?.target?.files?.[0];
+    if (!file) return;
+    if (!file.name.endsWith('.sql')) {
+      this.syncError = 'Solo se permiten archivos .sql';
+      return;
+    }
+    if (!confirm('⚠️ ADVERTENCIA: Esto reemplazará TODOS los datos actuales con los del backup. ¿Estás seguro?')) return;
+    this.syncRestaurando = true;
+    this.syncMensaje = '';
+    this.syncError = '';
+    this.api.restaurarBackupArchivo(file).subscribe({
+      next: (res: any) => {
+        this.syncRestaurando = false;
+        this.syncMensaje = '✅ ' + (res.message || 'Restauración completada');
+        alert('Base de datos restaurada. La app se recargará.');
+        window.location.reload();
+      },
+      error: (err: any) => {
+        this.syncRestaurando = false;
+        this.syncError = err?.error?.error || 'Error al restaurar';
+      }
+    });
+    event.target.value = '';
+  }
+
+  restaurarDesdeNombre(nombre: string) {
+    if (!confirm('⚠️ ADVERTENCIA: Esto reemplazará TODOS los datos actuales con los del backup seleccionado. ¿Continuar?')) return;
+    this.syncRestaurando = true;
+    this.syncMensaje = '';
+    this.syncError = '';
+    this.api.restaurarBackupNombre(nombre).subscribe({
+      next: (res: any) => {
+        this.syncRestaurando = false;
+        this.syncMensaje = '✅ ' + (res.message || 'Restauración completada');
+        alert('Base de datos restaurada. La app se recargará.');
+        window.location.reload();
+      },
+      error: (err: any) => {
+        this.syncRestaurando = false;
+        this.syncError = err?.error?.error || 'Error al restaurar';
+      }
+    });
+  }
+
+  eliminarBackupSync(nombre: string) {
+    if (!confirm(`¿Eliminar el backup "${nombre}"?`)) return;
+    this.api.eliminarBackup(nombre).subscribe({
+      next: () => this.cargarSyncBackups(),
+      error: () => this.syncError = 'Error al eliminar backup'
+    });
+  }
+
+  toggleAutoBackup() {
+    this.syncConfig.autoBackup = !this.syncConfig.autoBackup;
+    this.api.guardarSyncConfig({ autoBackup: this.syncConfig.autoBackup }).subscribe({
+      next: () => this.syncMensaje = this.syncConfig.autoBackup ? 'Auto-backup activado' : 'Auto-backup desactivado',
+      error: () => this.syncError = 'Error al guardar configuración'
+    });
+  }
+
+  guardarSyncFolder() {
+    if (!this.syncBackupFolder) return;
+    this.api.guardarSyncConfig({ backupFolder: this.syncBackupFolder }).subscribe({
+      next: () => {
+        this.syncMensaje = 'Carpeta de backup actualizada';
+        this.cargarSyncConfig();
+        this.cargarSyncBackups();
+      },
+      error: () => this.syncError = 'Error al guardar carpeta'
+    });
+  }
+
+  formatBytes(bytes: number): string {
+    if (!bytes) return '0 B';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / 1048576).toFixed(1) + ' MB';
+  }
+
+  formatFechaBackup(fecha: string): string {
+    return new Date(fecha).toLocaleString('es-ES', {
+      day: '2-digit', month: '2-digit', year: 'numeric',
+      hour: '2-digit', minute: '2-digit'
+    });
   }
 }

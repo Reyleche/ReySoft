@@ -1,9 +1,11 @@
 const { app, BrowserWindow, dialog, ipcMain } = require('electron');
 const { autoUpdater } = require('electron-updater');
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const path = require('path');
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
+const os = require('os');
 
 let mainWindow = null;
 let splashWindow = null;
@@ -220,6 +222,21 @@ const createWindow = async () => {
   });
 };
 
+// IPC: Obtener ruta OneDrive detectada
+ipcMain.handle('get-onedrive-path', async () => {
+  const candidates = [
+    process.env.OneDrive,
+    process.env.OneDriveConsumer,
+    process.env.OneDriveCommercial,
+    path.join(os.homedir(), 'OneDrive'),
+    path.join(os.homedir(), 'OneDrive - Personal')
+  ].filter(Boolean);
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return '';
+});
+
 // IPC: Impresión silenciosa de recibo
 ipcMain.handle('print-silent', async (_event, html) => {
   return new Promise((resolve) => {
@@ -275,7 +292,35 @@ app.whenReady().then(() => {
   });
 });
 
-app.on('before-quit', () => {
+app.on('before-quit', async (e) => {
+  // Auto-backup antes de cerrar
+  if (!app._backupDone) {
+    e.preventDefault();
+    app._backupDone = true;
+    try {
+      await new Promise((resolve, reject) => {
+        const postData = JSON.stringify({});
+        const req = http.request({
+          hostname: 'localhost', port: 3000,
+          path: '/api/sync/backup', method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Content-Length': postData.length }
+        }, (res) => {
+          let data = '';
+          res.on('data', c => data += c);
+          res.on('end', () => resolve(data));
+        });
+        req.on('error', () => resolve(null));
+        req.setTimeout(15000, () => { req.destroy(); resolve(null); });
+        req.write(postData);
+        req.end();
+      });
+    } catch(err) {
+      // Silently skip if backup fails
+    }
+    app.quit();
+    return;
+  }
+
   if (backendProcess) {
     backendProcess.kill();
   }

@@ -3656,6 +3656,209 @@ app.put('/api/config/factura-secuencia', async (req, res) => {
     }
 });
 
+// ===================== BACKUP / SINCRONIZACIÓN =====================
+const { execSync } = require('child_process');
+const os = require('os');
+
+// Helper: encontrar pg_dump y psql
+function findPgBin(exe) {
+    try {
+        const pgDir = fs.readdirSync('C:\\Program Files\\PostgreSQL').sort().reverse()[0];
+        const p = `C:\\Program Files\\PostgreSQL\\${pgDir}\\bin\\${exe}`;
+        if (fs.existsSync(p)) return p;
+    } catch(e) {}
+    return '';
+}
+
+// Helper: detectar carpeta OneDrive
+function detectOneDrivePath() {
+    const candidates = [
+        process.env.OneDrive,
+        process.env.OneDriveConsumer,
+        process.env.OneDriveCommercial,
+        path.join(os.homedir(), 'OneDrive'),
+        path.join(os.homedir(), 'OneDrive - Personal')
+    ].filter(Boolean);
+    for (const p of candidates) {
+        if (fs.existsSync(p)) return p;
+    }
+    return '';
+}
+
+// Config de sincronización
+const SYNC_CONFIG_PATH = path.join(__dirname, 'sync_config.json');
+function getSyncConfig() {
+    try {
+        if (fs.existsSync(SYNC_CONFIG_PATH)) {
+            return JSON.parse(fs.readFileSync(SYNC_CONFIG_PATH, 'utf8'));
+        }
+    } catch(e) {}
+    return { backupFolder: '', autoBackup: true };
+}
+function saveSyncConfig(cfg) {
+    fs.writeFileSync(SYNC_CONFIG_PATH, JSON.stringify(cfg, null, 2), 'utf8');
+}
+
+// GET config de sync + detectar OneDrive
+app.get('/api/sync/config', (req, res) => {
+    const cfg = getSyncConfig();
+    const oneDrivePath = detectOneDrivePath();
+    res.json({
+        ...cfg,
+        oneDriveDetected: oneDrivePath,
+        backupFolderResolved: cfg.backupFolder || (oneDrivePath ? path.join(oneDrivePath, 'Backups_CocoCana') : '')
+    });
+});
+
+// POST guardar config de sync
+app.post('/api/sync/config', (req, res) => {
+    const { backupFolder, autoBackup } = req.body;
+    const cfg = getSyncConfig();
+    if (backupFolder !== undefined) cfg.backupFolder = backupFolder;
+    if (autoBackup !== undefined) cfg.autoBackup = autoBackup;
+    saveSyncConfig(cfg);
+    res.json({ ok: true, config: cfg });
+});
+
+// POST crear backup
+app.post('/api/sync/backup', async (req, res) => {
+    try {
+        const pgDump = findPgBin('pg_dump.exe');
+        if (!pgDump) return res.status(500).json({ error: 'pg_dump.exe no encontrado' });
+
+        const cfg = getSyncConfig();
+        const oneDrive = detectOneDrivePath();
+        const folder = cfg.backupFolder || (oneDrive ? path.join(oneDrive, 'Backups_CocoCana') : '');
+        if (!folder) return res.status(400).json({ error: 'No hay carpeta de backup configurada. Configura OneDrive o una carpeta personalizada.' });
+
+        if (!fs.existsSync(folder)) fs.mkdirSync(folder, { recursive: true });
+
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
+        const fileName = `backup_cococana_${timestamp}.sql`;
+        const filePath = path.join(folder, fileName);
+
+        const cmd = `"${pgDump}" -U postgres -p 5432 -h localhost -d db_cococana -F p -f "${filePath}"`;
+        execSync(cmd, { env: { ...process.env, PGPASSWORD: 'rey' }, timeout: 120000 });
+
+        const stats = fs.statSync(filePath);
+        res.json({ ok: true, fileName, filePath, size: stats.size, fecha: new Date().toISOString() });
+    } catch (err) {
+        console.error('Error backup:', err);
+        res.status(500).json({ error: 'Error al crear backup: ' + err.message });
+    }
+});
+
+// GET listar backups disponibles
+app.get('/api/sync/backups', (req, res) => {
+    try {
+        const cfg = getSyncConfig();
+        const oneDrive = detectOneDrivePath();
+        const folder = cfg.backupFolder || (oneDrive ? path.join(oneDrive, 'Backups_CocoCana') : '');
+        if (!folder || !fs.existsSync(folder)) return res.json({ backups: [], folder: folder || '(no configurada)' });
+
+        const files = fs.readdirSync(folder)
+            .filter(f => f.startsWith('backup_cococana_') && f.endsWith('.sql'))
+            .map(f => {
+                const stats = fs.statSync(path.join(folder, f));
+                return { nombre: f, size: stats.size, fecha: stats.mtime };
+            })
+            .sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+
+        res.json({ backups: files, folder });
+    } catch (err) {
+        console.error('Error listando backups:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST restaurar backup (upload de .sql o desde archivo local)
+const uploadSql = multer({ dest: os.tmpdir() });
+app.post('/api/sync/restaurar', uploadSql.single('archivo'), async (req, res) => {
+    try {
+        const psqlPath = findPgBin('psql.exe');
+        if (!psqlPath) return res.status(500).json({ error: 'psql.exe no encontrado' });
+
+        let sqlFile = '';
+        if (req.file) {
+            sqlFile = req.file.path;
+        } else if (req.body.fileName) {
+            const cfg = getSyncConfig();
+            const oneDrive = detectOneDrivePath();
+            const folder = cfg.backupFolder || (oneDrive ? path.join(oneDrive, 'Backups_CocoCana') : '');
+            sqlFile = path.join(folder, req.body.fileName);
+        }
+
+        if (!sqlFile || !fs.existsSync(sqlFile)) {
+            return res.status(400).json({ error: 'Archivo de backup no encontrado' });
+        }
+
+        // Cerrar conexiones actuales al pool para liberar la BD
+        await pool.end();
+
+        // Recrear base de datos
+        const pgEnv = { ...process.env, PGPASSWORD: 'rey' };
+        try {
+            execSync(`"${psqlPath}" -U postgres -h localhost -p 5432 -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='db_cococana' AND pid <> pg_backend_pid();"`, { env: pgEnv, timeout: 15000 });
+        } catch(e) {}
+
+        try {
+            execSync(`"${psqlPath}" -U postgres -h localhost -p 5432 -c "DROP DATABASE IF EXISTS db_cococana;"`, { env: pgEnv, timeout: 15000 });
+        } catch(e) {}
+
+        execSync(`"${psqlPath}" -U postgres -h localhost -p 5432 -c "CREATE DATABASE db_cococana;"`, { env: pgEnv, timeout: 15000 });
+
+        // Restaurar
+        execSync(`"${psqlPath}" -U postgres -h localhost -p 5432 -d db_cococana -f "${sqlFile}"`, { env: pgEnv, timeout: 120000 });
+
+        // Limpiar archivo temporal si fue upload
+        if (req.file) {
+            try { fs.unlinkSync(sqlFile); } catch(e) {}
+        }
+
+        res.json({ ok: true, message: 'Base de datos restaurada exitosamente. Reinicia la app para aplicar cambios.' });
+    } catch (err) {
+        console.error('Error restaurando:', err);
+        res.status(500).json({ error: 'Error al restaurar: ' + err.message });
+    }
+});
+
+// DELETE eliminar un backup específico
+app.delete('/api/sync/backup/:nombre', (req, res) => {
+    try {
+        const cfg = getSyncConfig();
+        const oneDrive = detectOneDrivePath();
+        const folder = cfg.backupFolder || (oneDrive ? path.join(oneDrive, 'Backups_CocoCana') : '');
+        const filePath = path.join(folder, req.params.nombre);
+        if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+            return res.json({ ok: true });
+        }
+        res.status(404).json({ error: 'Archivo no encontrado' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// (LEGACY) GET descargar backup por navegador
+app.get('/api/backup/descargar', async (req, res) => {
+    try {
+        const pgDump = findPgBin('pg_dump.exe');
+        if (!pgDump) return res.status(500).json({ error: 'pg_dump no encontrado' });
+
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
+        const backupFile = path.join(os.tmpdir(), `backup_cococana_${timestamp}.sql`);
+        const cmd = `"${pgDump}" -U postgres -p 5432 -h localhost -d db_cococana -F p -f "${backupFile}"`;
+        execSync(cmd, { env: { ...process.env, PGPASSWORD: 'rey' }, timeout: 60000 });
+
+        res.download(backupFile, `backup_cococana_${timestamp}.sql`, () => {
+            try { fs.unlinkSync(backupFile); } catch(e) {}
+        });
+    } catch (err) {
+        console.error('Error backup:', err);
+        res.status(500).json({ error: 'Error al generar backup: ' + err.message });
+    }
+});
+
 initDb()
     .then(() => {
         app.listen(port, () => {
