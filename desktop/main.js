@@ -293,28 +293,49 @@ app.whenReady().then(() => {
 });
 
 app.on('before-quit', async (e) => {
-  // Auto-backup antes de cerrar
+  // Auto-backup antes de cerrar (si está habilitado en config)
   if (!app._backupDone) {
     e.preventDefault();
     app._backupDone = true;
     try {
-      await new Promise((resolve, reject) => {
-        const postData = JSON.stringify({});
+      const cfgRaw = await new Promise((resolve) => {
         const req = http.request({
           hostname: 'localhost', port: 3000,
-          path: '/api/sync/backup', method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Content-Length': postData.length }
+          path: '/api/sync/config', method: 'GET'
         }, (res) => {
           let data = '';
           res.on('data', c => data += c);
           res.on('end', () => resolve(data));
         });
         req.on('error', () => resolve(null));
-        req.setTimeout(15000, () => { req.destroy(); resolve(null); });
-        req.write(postData);
+        req.setTimeout(5000, () => { req.destroy(); resolve(null); });
         req.end();
       });
-    } catch(err) {
+
+      let autoBackup = true;
+      try {
+        const cfg = JSON.parse(cfgRaw || '{}');
+        if (cfg && typeof cfg.autoBackup === 'boolean') autoBackup = cfg.autoBackup;
+      } catch {}
+
+      if (autoBackup) {
+        await new Promise((resolve) => {
+          const postData = JSON.stringify({});
+          const req = http.request({
+            hostname: 'localhost', port: 3000,
+            path: '/api/sync/backup', method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Content-Length': postData.length }
+          }, (res) => {
+            res.resume();
+            res.on('end', () => resolve(true));
+          });
+          req.on('error', () => resolve(false));
+          req.setTimeout(15000, () => { req.destroy(); resolve(false); });
+          req.write(postData);
+          req.end();
+        });
+      }
+    } catch {
       // Silently skip if backup fails
     }
     app.quit();

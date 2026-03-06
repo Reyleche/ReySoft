@@ -12,9 +12,20 @@ const port = 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret_reysoft';
 const JWT_EXPIRES_IN = '8h';
 
+let isDbRestoreInProgress = false;
+
 // HABILITAR CORS PARA QUE ANGULAR ENTRE
 app.use(cors()); // <--- ESTA LÍNEA ES VITAL
 app.use(express.json({ limit: '10mb' }));
+
+// Evitar que se ejecuten operaciones mientras se está restaurando la BD
+app.use((req, res, next) => {
+    if (!isDbRestoreInProgress) return next();
+    if (!req.path.startsWith('/api/')) return next();
+    // Permitimos que el frontend consulte config/listado mientras restaura
+    if (req.path.startsWith('/api/sync/config') || req.path.startsWith('/api/sync/backups')) return next();
+    return res.status(503).json({ error: 'Restauración de base de datos en curso. Intenta nuevamente en unos segundos.' });
+});
 
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) {
@@ -3737,8 +3748,11 @@ app.post('/api/sync/backup', async (req, res) => {
         const fileName = `backup_cococana_${timestamp}.sql`;
         const filePath = path.join(folder, fileName);
 
-        const cmd = `"${pgDump}" -U postgres -p 5432 -h localhost -d db_cococana -F p -f "${filePath}"`;
-        execSync(cmd, { env: { ...process.env, PGPASSWORD: 'rey' }, timeout: 120000 });
+        const cmd = `"${pgDump}" -U postgres -p 5432 -h localhost -d db_cococana --encoding=UTF8 --no-owner --no-privileges -F p -f "${filePath}"`;
+        execSync(cmd, {
+            env: { ...process.env, PGPASSWORD: 'rey', PGCLIENTENCODING: 'UTF8' },
+            timeout: 120000
+        });
 
         const stats = fs.statSync(filePath);
         res.json({ ok: true, fileName, filePath, size: stats.size, fecha: new Date().toISOString() });
@@ -3771,9 +3785,14 @@ app.get('/api/sync/backups', (req, res) => {
     }
 });
 
-// POST restaurar backup (upload de .sql o desde archivo local)
+// POST restaurar backup (SEGURO): restaura a BD temporal y luego reemplaza
 const uploadSql = multer({ dest: os.tmpdir() });
 app.post('/api/sync/restaurar', uploadSql.single('archivo'), async (req, res) => {
+    if (isDbRestoreInProgress) {
+        return res.status(409).json({ error: 'Ya hay una restauración en curso' });
+    }
+
+    isDbRestoreInProgress = true;
     try {
         const psqlPath = findPgBin('psql.exe');
         if (!psqlPath) return res.status(500).json({ error: 'psql.exe no encontrado' });
@@ -3792,33 +3811,64 @@ app.post('/api/sync/restaurar', uploadSql.single('archivo'), async (req, res) =>
             return res.status(400).json({ error: 'Archivo de backup no encontrado' });
         }
 
-        // Cerrar conexiones actuales al pool para liberar la BD
-        await pool.end();
-
-        // Recrear base de datos
-        const pgEnv = { ...process.env, PGPASSWORD: 'rey' };
+        // Liberar conexiones del pool (sin romper el backend: luego lo reiniciamos)
         try {
-            execSync(`"${psqlPath}" -U postgres -h localhost -p 5432 -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='db_cococana' AND pid <> pg_backend_pid();"`, { env: pgEnv, timeout: 15000 });
-        } catch(e) {}
+            await pool.end();
+        } catch {}
 
-        try {
-            execSync(`"${psqlPath}" -U postgres -h localhost -p 5432 -c "DROP DATABASE IF EXISTS db_cococana;"`, { env: pgEnv, timeout: 15000 });
-        } catch(e) {}
+        const stamp = new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
+        const tmpDb = `db_cococana_tmp_${stamp}`;
+        const oldDb = `db_cococana_old_${stamp}`;
 
-        execSync(`"${psqlPath}" -U postgres -h localhost -p 5432 -c "CREATE DATABASE db_cococana;"`, { env: pgEnv, timeout: 15000 });
+        const pgEnv = { ...process.env, PGPASSWORD: 'rey', PGCLIENTENCODING: 'UTF8' };
+        const psqlAdmin = (sql) => {
+            execSync(`"${psqlPath}" -U postgres -h localhost -p 5432 -d postgres -v ON_ERROR_STOP=1 -c "${sql}"`, { env: pgEnv, timeout: 60000 });
+        };
 
-        // Restaurar
-        execSync(`"${psqlPath}" -U postgres -h localhost -p 5432 -d db_cococana -f "${sqlFile}"`, { env: pgEnv, timeout: 120000 });
+        // Limpieza previa por si quedó algo a medias
+        try { psqlAdmin(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname IN ('db_cococana', '${tmpDb}', '${oldDb}') AND pid <> pg_backend_pid();`); } catch {}
+        try { psqlAdmin(`DROP DATABASE IF EXISTS ${tmpDb};`); } catch {}
 
-        // Limpiar archivo temporal si fue upload
-        if (req.file) {
-            try { fs.unlinkSync(sqlFile); } catch(e) {}
+        // 1) Crear BD temporal en UTF-8
+        psqlAdmin(`CREATE DATABASE ${tmpDb} WITH TEMPLATE template0 ENCODING 'UTF8';`);
+
+        // 2) Restaurar en BD temporal (si falla, la original queda intacta)
+        execSync(`"${psqlPath}" -U postgres -h localhost -p 5432 -d ${tmpDb} -v ON_ERROR_STOP=1 -f "${sqlFile}"`, { env: pgEnv, timeout: 240000 });
+
+        // 3) Validación mínima
+        const tableCountRaw = execSync(`"${psqlPath}" -U postgres -h localhost -p 5432 -d ${tmpDb} -t -A -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public';"`, { env: pgEnv, timeout: 60000 }).toString().trim();
+        const tableCount = Number(tableCountRaw || '0');
+        if (!Number.isFinite(tableCount) || tableCount < 5) {
+            throw new Error('Backup inválido o incompleto (muy pocas tablas restauradas)');
         }
 
-        res.json({ ok: true, message: 'Base de datos restaurada exitosamente. Reinicia la app para aplicar cambios.' });
+        // 4) Swap seguro: renombrar la actual a *_old y la temporal a db_cococana
+        try { psqlAdmin(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname IN ('db_cococana', '${tmpDb}', '${oldDb}') AND pid <> pg_backend_pid();`); } catch {}
+
+        // si existe una old anterior, la borramos para no acumular
+        try { psqlAdmin(`DROP DATABASE IF EXISTS ${oldDb};`); } catch {}
+
+        psqlAdmin(`ALTER DATABASE db_cococana RENAME TO ${oldDb};`);
+        psqlAdmin(`ALTER DATABASE ${tmpDb} RENAME TO db_cococana;`);
+
+        // 5) Re-abrir pool para seguir funcionando sin reiniciar
+        try {
+            await pool.reset();
+        } catch {}
+
+        res.json({
+            ok: true,
+            message: 'Base de datos restaurada correctamente (swap seguro).',
+            previousDatabase: oldDb
+        });
     } catch (err) {
         console.error('Error restaurando:', err);
         res.status(500).json({ error: 'Error al restaurar: ' + err.message });
+    } finally {
+        isDbRestoreInProgress = false;
+        if (req.file && req.file.path) {
+            try { fs.unlinkSync(req.file.path); } catch {}
+        }
     }
 });
 

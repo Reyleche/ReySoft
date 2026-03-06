@@ -10,6 +10,9 @@ desktop/dist/
 # Uploads del backend
 backend/uploads/
 
+# Config local de sincronización
+backend/sync_config.json
+
 # Archivos del sistema
 *.log
 .DS_Store
