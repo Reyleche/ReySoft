@@ -27,7 +27,8 @@ app.use((req, res, next) => {
     return res.status(503).json({ error: 'Restauración de base de datos en curso. Intenta nuevamente en unos segundos.' });
 });
 
-const uploadsDir = path.join(__dirname, 'uploads');
+const appDataDir = process.env.REYSOFT_APP_DATA || __dirname;
+const uploadsDir = path.join(appDataDir, 'uploads');
 if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir, { recursive: true });
 }
@@ -3744,7 +3745,7 @@ function detectOneDrivePath() {
 }
 
 // Config de sincronización
-const SYNC_CONFIG_PATH = path.join(__dirname, 'sync_config.json');
+const SYNC_CONFIG_PATH = path.join(appDataDir, 'sync_config.json');
 function getSyncConfig() {
     try {
         if (fs.existsSync(SYNC_CONFIG_PATH)) {
@@ -3754,17 +3755,20 @@ function getSyncConfig() {
     return { backupFolder: '', autoBackup: true };
 }
 function saveSyncConfig(cfg) {
-    fs.writeFileSync(SYNC_CONFIG_PATH, JSON.stringify(cfg, null, 2), 'utf8');
+    const tmp = `${SYNC_CONFIG_PATH}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2), 'utf8');
+    fs.renameSync(tmp, SYNC_CONFIG_PATH);
 }
 
 // GET config de sync + detectar OneDrive
 app.get('/api/sync/config', (req, res) => {
     const cfg = getSyncConfig();
     const oneDrivePath = detectOneDrivePath();
+    const defaultLocalFolder = path.join(appDataDir, 'backups');
     res.json({
         ...cfg,
         oneDriveDetected: oneDrivePath,
-        backupFolderResolved: cfg.backupFolder || (oneDrivePath ? path.join(oneDrivePath, 'Backups_CocoCana') : '')
+        backupFolderResolved: cfg.backupFolder || (oneDrivePath ? path.join(oneDrivePath, 'Backups_CocoCana') : defaultLocalFolder)
     });
 });
 
@@ -3784,10 +3788,15 @@ app.post('/api/sync/backup', async (req, res) => {
         const pgDump = findPgBin('pg_dump.exe');
         if (!pgDump) return res.status(500).json({ error: 'pg_dump.exe no encontrado' });
 
+        const pgUser = process.env.PGUSER || 'postgres';
+        const pgDb = process.env.PGDATABASE || 'db_cococana';
+        const pgHost = process.env.PGHOST || 'localhost';
+        const pgPort = String(process.env.PGPORT || '5432');
+        const pgPassword = process.env.PGPASSWORD || 'rey';
+
         const cfg = getSyncConfig();
         const oneDrive = detectOneDrivePath();
-        const folder = cfg.backupFolder || (oneDrive ? path.join(oneDrive, 'Backups_CocoCana') : '');
-        if (!folder) return res.status(400).json({ error: 'No hay carpeta de backup configurada. Configura OneDrive o una carpeta personalizada.' });
+        const folder = cfg.backupFolder || (oneDrive ? path.join(oneDrive, 'Backups_CocoCana') : path.join(appDataDir, 'backups'));
 
         if (!fs.existsSync(folder)) fs.mkdirSync(folder, { recursive: true });
 
@@ -3795,11 +3804,25 @@ app.post('/api/sync/backup', async (req, res) => {
         const fileName = `backup_cococana_${timestamp}.sql`;
         const filePath = path.join(folder, fileName);
 
-        const cmd = `"${pgDump}" -U postgres -p 5432 -h localhost -d db_cococana --encoding=UTF8 --no-owner --no-privileges -F p -f "${filePath}"`;
+        const cmd = `"${pgDump}" -U "${pgUser}" -p ${pgPort} -h "${pgHost}" -d "${pgDb}" --encoding=UTF8 --no-owner --no-privileges -F p -f "${filePath}"`;
         execSync(cmd, {
-            env: { ...process.env, PGPASSWORD: 'rey', PGCLIENTENCODING: 'UTF8' },
+            env: { ...process.env, PGPASSWORD: pgPassword, PGCLIENTENCODING: 'UTF8' },
             timeout: 120000
         });
+
+        // Rotación simple: mantener últimos 50 backups
+        try {
+            const backups = fs.readdirSync(folder)
+                .filter(f => f.startsWith('backup_cococana_') && f.endsWith('.sql'))
+                .map(f => ({
+                    name: f,
+                    time: fs.statSync(path.join(folder, f)).mtimeMs
+                }))
+                .sort((a, b) => b.time - a.time);
+            for (const old of backups.slice(50)) {
+                try { fs.unlinkSync(path.join(folder, old.name)); } catch {}
+            }
+        } catch {}
 
         const stats = fs.statSync(filePath);
         res.json({ ok: true, fileName, filePath, size: stats.size, fecha: new Date().toISOString() });
@@ -3814,7 +3837,7 @@ app.get('/api/sync/backups', (req, res) => {
     try {
         const cfg = getSyncConfig();
         const oneDrive = detectOneDrivePath();
-        const folder = cfg.backupFolder || (oneDrive ? path.join(oneDrive, 'Backups_CocoCana') : '');
+        const folder = cfg.backupFolder || (oneDrive ? path.join(oneDrive, 'Backups_CocoCana') : path.join(appDataDir, 'backups'));
         if (!folder || !fs.existsSync(folder)) return res.json({ backups: [], folder: folder || '(no configurada)' });
 
         const files = fs.readdirSync(folder)

@@ -1,11 +1,11 @@
 const { Pool } = require('pg');
 
 const poolConfig = {
-  user: 'postgres',
-  host: 'localhost',
-  database: 'db_cococana',
-  password: 'rey',
-  port: 5432,
+  user: process.env.PGUSER || 'postgres',
+  host: process.env.PGHOST || 'localhost',
+  database: process.env.PGDATABASE || 'db_cococana',
+  password: process.env.PGPASSWORD || 'rey',
+  port: Number(process.env.PGPORT || 5432),
 };
 
 function createInternalPool() {
