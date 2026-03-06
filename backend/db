@@ -10,8 +10,13 @@ const poolConfig = {
 
 function createInternalPool() {
   const p = new Pool(poolConfig);
-  p.on('connect', () => {
+  p.on('connect', async (client) => {
     console.log('✅ Conexión exitosa a la Base de Datos de Coco y Caña');
+    try {
+      await client.query("SET client_encoding TO 'UTF8'");
+    } catch {
+      // ignore
+    }
   });
   return p;
 }

@@ -50,6 +50,50 @@ const normalizeName = (value) => String(value || '')
     .replace(/\s+/g, ' ')
     .trim();
 
+async function fixMojibakeEncoding() {
+    // Repara casos típicos: "PiÃ±a" -> "Piña".
+    // Solo aplica en columnas de texto existentes y solo cuando hay señales claras (Ã / Â).
+    const targets = [
+        { table: 'productos', columns: ['nombre'] },
+        { table: 'categorias', columns: ['nombre'] },
+        { table: 'insumos', columns: ['nombre'] },
+        { table: 'ventas_items', columns: ['nombre'] },
+        { table: 'facturas_items', columns: ['nombre'] },
+        { table: 'bodega_productos', columns: ['nombre'] },
+        { table: 'bodega_insumos', columns: ['nombre'] },
+        { table: 'clientes', columns: ['nombre', 'direccion', 'notas'] },
+    ];
+
+    const validIdent = (v) => /^[a-z_][a-z0-9_]*$/.test(v);
+    for (const t of targets) {
+        if (!validIdent(t.table)) continue;
+        for (const col of t.columns) {
+            if (!validIdent(col)) continue;
+            try {
+                const meta = await pool.query(
+                    `SELECT data_type
+                     FROM information_schema.columns
+                     WHERE table_schema='public' AND table_name=$1 AND column_name=$2`,
+                    [t.table, col]
+                );
+                if (!meta.rowCount) continue;
+                const dt = String(meta.rows[0].data_type || '').toLowerCase();
+                if (dt !== 'text' && dt !== 'character varying') continue;
+
+                const sql = `
+                    UPDATE ${t.table}
+                    SET ${col} = convert_from(convert_to(${col}, 'LATIN1'), 'UTF8')
+                    WHERE ${col} IS NOT NULL
+                      AND (${col} LIKE '%Ã%' OR ${col} LIKE '%Â%')
+                `;
+                await pool.query(sql);
+            } catch (err) {
+                console.warn(`Fix encoding omitido en ${t.table}.${col}:`, err.message);
+            }
+        }
+    }
+}
+
 async function initDb() {
     // Asegurar columna de imagen en productos
     await pool.query('ALTER TABLE productos ADD COLUMN IF NOT EXISTS image_url TEXT');
@@ -424,6 +468,9 @@ async function initDb() {
         SELECT 1, 'REC', 1
         WHERE NOT EXISTS (SELECT 1 FROM facturas_secuencia WHERE id = 1)
     `);
+
+    // Reparación de textos dañados por encoding (ej: PiÃ±a)
+    await fixMojibakeEncoding();
 }
 
 const esProductoSoloInsumos = (nombreNorm) => {
