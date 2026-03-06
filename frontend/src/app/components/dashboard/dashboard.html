@@ -2246,17 +2246,17 @@
                         <i class="pi pi-download"></i>
                         <div>
                             <strong>{{ syncCargando ? 'Creando backup...' : 'Crear Backup Ahora' }}</strong>
-                            <small>Genera un respaldo de toda la base de datos</small>
+                            <small>Genera un respaldo completo (BD + fotos)</small>
                         </div>
                     </button>
                     <button class="btn-sync-action btn-sync-restore" (click)="syncFileInput.click()" [disabled]="syncRestaurando">
                         <i class="pi pi-upload"></i>
                         <div>
                             <strong>{{ syncRestaurando ? 'Restaurando...' : 'Restaurar desde Archivo' }}</strong>
-                            <small>Sube un archivo .sql para restaurar</small>
+                            <small>Sube un archivo .sql o .zip para restaurar</small>
                         </div>
                     </button>
-                    <input #syncFileInput type="file" accept=".sql" style="display:none" (change)="restaurarDesdeArchivo($event)">
+                    <input #syncFileInput type="file" accept=".sql,.zip" style="display:none" (change)="restaurarDesdeArchivo($event)">
                     <div class="sync-info-box">
                         <i class="pi pi-info-circle"></i>
                         <div>
@@ -2293,6 +2293,8 @@
                                 <i class="pi pi-file" style="color:#6366f1"></i>
                                 {{ b.nombre }}
                                 <span class="sync-badge sync-badge-ok" *ngIf="i === 0">Más reciente</span>
+                                <span class="sync-badge sync-badge-ok" *ngIf="(b.nombre || '').toLowerCase().endsWith('.zip')">Completo (ZIP)</span>
+                                <span class="sync-badge sync-badge-warn" *ngIf="(b.nombre || '').toLowerCase().endsWith('.sql')">Solo BD (SQL)</span>
                             </td>
                             <td>{{ formatFechaBackup(b.fecha) }}</td>
                             <td>{{ formatBytes(b.size) }}</td>

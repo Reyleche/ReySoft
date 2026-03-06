@@ -3393,11 +3393,16 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
   restaurarDesdeArchivo(event: any) {
     const file = event?.target?.files?.[0];
     if (!file) return;
-    if (!file.name.endsWith('.sql')) {
-      this.syncError = 'Solo se permiten archivos .sql';
+    const lower = String(file.name || '').toLowerCase();
+    if (!lower.endsWith('.sql') && !lower.endsWith('.zip')) {
+      this.syncError = 'Solo se permiten archivos .sql o .zip';
       return;
     }
-    if (!confirm('⚠️ ADVERTENCIA: Esto reemplazará TODOS los datos actuales con los del backup. ¿Estás seguro?')) return;
+    const isZip = lower.endsWith('.zip');
+    const msg = isZip
+      ? '⚠️ ADVERTENCIA: Esto reemplazará TODOS los datos actuales con los del backup ZIP seleccionado. Las fotos (uploads) se mezclarán (no se borran las existentes). ¿Continuar?'
+      : '⚠️ ADVERTENCIA: Esto reemplazará TODOS los datos actuales con los del backup SQL. ¿Estás seguro?';
+    if (!confirm(msg)) return;
     this.syncRestaurando = true;
     this.syncMensaje = '';
     this.syncError = '';
@@ -3417,7 +3422,12 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
   }
 
   restaurarDesdeNombre(nombre: string) {
-    if (!confirm('⚠️ ADVERTENCIA: Esto reemplazará TODOS los datos actuales con los del backup seleccionado. ¿Continuar?')) return;
+    const lower = String(nombre || '').toLowerCase();
+    const isZip = lower.endsWith('.zip');
+    const msg = isZip
+      ? '⚠️ ADVERTENCIA: Esto reemplazará TODOS los datos actuales con los del backup ZIP seleccionado. Las fotos (uploads) se mezclarán (no se borran las existentes). ¿Continuar?'
+      : '⚠️ ADVERTENCIA: Esto reemplazará TODOS los datos actuales con los del backup seleccionado. ¿Continuar?';
+    if (!confirm(msg)) return;
     this.syncRestaurando = true;
     this.syncMensaje = '';
     this.syncError = '';

@@ -465,7 +465,10 @@ export class ApiService {
   }
 
   crearBackup(): Observable<any> {
-    return this.http.post(`${this.apiUrl}/sync/backup`, {});
+    // Preferimos backup completo (ZIP con fotos). Si el backend es viejo, caemos al .sql.
+    return this.http.post(`${this.apiUrl}/sync/backup-full`, {}).pipe(
+      catchError(() => this.http.post(`${this.apiUrl}/sync/backup`, {}))
+    );
   }
 
   listarBackups(): Observable<any> {

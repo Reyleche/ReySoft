@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Menu } = require('electron');
 let autoUpdater = null;
 try {
   ({ autoUpdater } = require('electron-updater'));
@@ -7,6 +7,7 @@ try {
 }
 const { spawn, execSync } = require('child_process');
 const path = require('path');
+const { pathToFileURL } = require('url');
 const http = require('http');
 const https = require('https');
 const fs = require('fs');
@@ -175,6 +176,13 @@ const callApi = (method, pathName, body, timeoutMs = 15000) => {
   });
 };
 
+const triggerAutoBackup = async () => {
+  // Preferimos backup completo (ZIP con fotos). Si el backend es viejo, caemos al .sql normal.
+  const full = await callApi('POST', '/api/sync/backup-full', {}, 120000);
+  if (full && full.ok && full.status >= 200 && full.status < 300) return full;
+  return callApi('POST', '/api/sync/backup', {}, 120000);
+};
+
 let backupInterval = null;
 const setupPeriodicAutoBackup = () => {
   if (backupInterval) return;
@@ -190,7 +198,7 @@ const setupPeriodicAutoBackup = () => {
       } catch {}
       if (!autoBackup) return;
 
-      await callApi('POST', '/api/sync/backup', {}, 120000);
+      await triggerAutoBackup();
     } catch {
       // ignore
     }
@@ -237,22 +245,34 @@ const createWindow = async () => {
     }
   });
   const splashLogo = getSplashLogoPath();
+  const splashLogoUrl = splashLogo ? pathToFileURL(splashLogo).toString() : '';
   await splashWindow.loadFile(path.join(__dirname, 'splash.html'), {
-    query: splashLogo ? { logo: splashLogo } : {}
+    query: splashLogoUrl ? { logo: splashLogoUrl } : {}
   });
 
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
     show: false,
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js')
     }
   });
 
+  try {
+    mainWindow.setMenuBarVisibility(false);
+    mainWindow.setMenu(null);
+  } catch {}
+
   const rendererPath = getRendererPath();
   const uiLog = fs.createWriteStream(getUiLogPath(), { flags: 'a' });
   uiLog.write(`Renderer path: ${rendererPath}\n`);
+
+  const MIN_SPLASH_MS = 5000;
+  const splashShownAt = Date.now();
+  let mainShowRequested = false;
+  let mainShowTimer = null;
 
   const closeSplash = () => {
     if (splashWindow && !splashWindow.isDestroyed()) {
@@ -262,16 +282,31 @@ const createWindow = async () => {
   };
 
   const showMain = (reason) => {
-    try {
-      uiLog.write(`Show main (${reason})\n`);
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.show();
-        mainWindow.focus();
+    if (mainShowRequested) return;
+    mainShowRequested = true;
+
+    const elapsed = Date.now() - splashShownAt;
+    const delay = Math.max(0, MIN_SPLASH_MS - elapsed);
+    uiLog.write(`Show main requested (${reason}) delayMs=${delay}\n`);
+
+    const doShow = () => {
+      try {
+        uiLog.write(`Show main (${reason})\n`);
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.show();
+          mainWindow.focus();
+        }
+      } catch (e) {
+        uiLog.write(`Show main error: ${String(e)}\n`);
       }
-    } catch (e) {
-      uiLog.write(`Show main error: ${String(e)}\n`);
+      closeSplash();
+    };
+
+    if (delay > 0) {
+      mainShowTimer = setTimeout(doShow, delay);
+    } else {
+      doShow();
     }
-    closeSplash();
   };
 
   // Si por alguna razón el renderer se queda colgado, no dejamos el splash infinito
@@ -281,6 +316,10 @@ const createWindow = async () => {
 
   mainWindow.on('closed', () => {
     clearTimeout(splashTimeout);
+    if (mainShowTimer) {
+      try { clearTimeout(mainShowTimer); } catch {}
+      mainShowTimer = null;
+    }
     closeSplash();
   });
 
@@ -425,6 +464,7 @@ ipcMain.handle('get-logo-base64', async () => {
 });
 
 app.whenReady().then(() => {
+  try { Menu.setApplicationMenu(null); } catch {}
   startBackend();
   setupAutoUpdater();
   createWindow();
@@ -453,7 +493,7 @@ app.on('before-quit', async (e) => {
       } catch {}
 
       if (autoBackup) {
-        await callApi('POST', '/api/sync/backup', {}, 120000);
+        await triggerAutoBackup();
       }
     } catch {
       // Silently skip if backup fails

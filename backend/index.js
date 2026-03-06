@@ -6,6 +6,8 @@ const path = require('path');
 const fs = require('fs');
 const multer = require('multer');
 const XLSX = require('xlsx');
+const archiver = require('archiver');
+const unzipper = require('unzipper');
 
 const app = express();
 const port = 3000;
@@ -33,7 +35,15 @@ const uploadsDir = path.join(appDataDir, 'uploads');
 if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir, { recursive: true });
 }
-app.use('/uploads', express.static(uploadsDir));
+// Servimos primero desde la ruta "nueva" (AppData), y luego como fallback desde la ruta legacy del backend.
+// Esto evita que se rompan fotos antiguas si todavía viven en backend/uploads.
+app.use('/uploads', express.static(uploadsDir, { fallthrough: true }));
+try {
+    const legacyUploadsDir = path.join(__dirname, 'uploads');
+    if (legacyUploadsDir !== uploadsDir && fs.existsSync(legacyUploadsDir)) {
+        app.use('/uploads', express.static(legacyUploadsDir, { fallthrough: true }));
+    }
+} catch {}
 
 const storage = multer.diskStorage({
     destination: (_req, _file, cb) => cb(null, uploadsDir),
@@ -3833,6 +3843,70 @@ app.post('/api/sync/backup', async (req, res) => {
     }
 });
 
+// POST crear backup completo (BD + uploads) en ZIP
+app.post('/api/sync/backup-full', async (req, res) => {
+    try {
+        const pgDump = findPgBin('pg_dump.exe');
+        if (!pgDump) return res.status(500).json({ error: 'pg_dump.exe no encontrado' });
+
+        const pgUser = process.env.PGUSER || 'postgres';
+        const pgDb = process.env.PGDATABASE || 'db_cococana';
+        const pgHost = process.env.PGHOST || 'localhost';
+        const pgPort = String(process.env.PGPORT || '5432');
+        const pgPassword = process.env.PGPASSWORD || 'rey';
+
+        const cfg = getSyncConfig();
+        const oneDrive = detectOneDrivePath();
+        const folder = cfg.backupFolder || (oneDrive ? path.join(oneDrive, 'Backups_CocoCana') : path.join(appDataDir, 'backups'));
+        if (!fs.existsSync(folder)) fs.mkdirSync(folder, { recursive: true });
+
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
+        const tmpSqlPath = path.join(os.tmpdir(), `backup_cococana_${timestamp}.sql`);
+        const zipName = `backup_cococana_${timestamp}.zip`;
+        const zipPath = path.join(folder, zipName);
+
+        const dumpCmd = `"${pgDump}" -U "${pgUser}" -p ${pgPort} -h "${pgHost}" -d "${pgDb}" --encoding=UTF8 --no-owner --no-privileges -F p -f "${tmpSqlPath}"`;
+        execSync(dumpCmd, {
+            env: { ...process.env, PGPASSWORD: pgPassword, PGCLIENTENCODING: 'UTF8' },
+            timeout: 120000
+        });
+
+        await new Promise((resolve, reject) => {
+            const output = fs.createWriteStream(zipPath);
+            const archive = archiver('zip', { zlib: { level: 9 } });
+            output.on('close', resolve);
+            output.on('error', reject);
+            archive.on('error', reject);
+            archive.pipe(output);
+
+            archive.file(tmpSqlPath, { name: 'db.sql' });
+            if (uploadsDir && fs.existsSync(uploadsDir)) {
+                archive.directory(uploadsDir, 'uploads');
+            }
+            archive.finalize();
+        });
+
+        try { fs.unlinkSync(tmpSqlPath); } catch {}
+
+        // Rotación simple: mantener últimos 50 backups ZIP
+        try {
+            const backups = fs.readdirSync(folder)
+                .filter(f => f.startsWith('backup_cococana_') && f.endsWith('.zip'))
+                .map(f => ({ name: f, time: fs.statSync(path.join(folder, f)).mtimeMs }))
+                .sort((a, b) => b.time - a.time);
+            for (const old of backups.slice(50)) {
+                try { fs.unlinkSync(path.join(folder, old.name)); } catch {}
+            }
+        } catch {}
+
+        const stats = fs.statSync(zipPath);
+        res.json({ ok: true, fileName: zipName, filePath: zipPath, size: stats.size, fecha: new Date().toISOString() });
+    } catch (err) {
+        console.error('Error backup-full:', err);
+        res.status(500).json({ error: 'Error al crear backup completo: ' + err.message });
+    }
+});
+
 // GET listar backups disponibles
 app.get('/api/sync/backups', (req, res) => {
     try {
@@ -3842,7 +3916,7 @@ app.get('/api/sync/backups', (req, res) => {
         if (!folder || !fs.existsSync(folder)) return res.json({ backups: [], folder: folder || '(no configurada)' });
 
         const files = fs.readdirSync(folder)
-            .filter(f => f.startsWith('backup_cococana_') && f.endsWith('.sql'))
+            .filter(f => f.startsWith('backup_cococana_') && (f.endsWith('.sql') || f.endsWith('.zip')))
             .map(f => {
                 const stats = fs.statSync(path.join(folder, f));
                 return { nombre: f, size: stats.size, fecha: stats.mtime };
@@ -3864,22 +3938,50 @@ app.post('/api/sync/restaurar', uploadSql.single('archivo'), async (req, res) =>
     }
 
     isDbRestoreInProgress = true;
+    let extractedDir = '';
     try {
         const psqlPath = findPgBin('psql.exe');
         if (!psqlPath) return res.status(500).json({ error: 'psql.exe no encontrado' });
 
         let sqlFile = '';
+        let extractedUploadsDir = '';
         if (req.file) {
             sqlFile = req.file.path;
         } else if (req.body.fileName) {
             const cfg = getSyncConfig();
             const oneDrive = detectOneDrivePath();
-            const folder = cfg.backupFolder || (oneDrive ? path.join(oneDrive, 'Backups_CocoCana') : '');
+            const folder = cfg.backupFolder || (oneDrive ? path.join(oneDrive, 'Backups_CocoCana') : path.join(appDataDir, 'backups'));
             sqlFile = path.join(folder, req.body.fileName);
         }
 
         if (!sqlFile || !fs.existsSync(sqlFile)) {
             return res.status(400).json({ error: 'Archivo de backup no encontrado' });
+        }
+
+        // Si es ZIP (backup completo), extraemos db.sql y (opcional) uploads/
+        if (String(sqlFile).toLowerCase().endsWith('.zip')) {
+            extractedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cococana_restore_'));
+            await new Promise((resolve, reject) => {
+                const stream = fs.createReadStream(sqlFile)
+                    .pipe(unzipper.Extract({ path: extractedDir }));
+                stream.on('close', resolve);
+                stream.on('error', reject);
+            });
+
+            const candidateSql = path.join(extractedDir, 'db.sql');
+            if (fs.existsSync(candidateSql)) {
+                sqlFile = candidateSql;
+            } else {
+                // fallback: buscar cualquier .sql
+                const found = fs.readdirSync(extractedDir).find(f => f.toLowerCase().endsWith('.sql'));
+                if (!found) return res.status(400).json({ error: 'ZIP inválido: no contiene db.sql' });
+                sqlFile = path.join(extractedDir, found);
+            }
+
+            const candUploads = path.join(extractedDir, 'uploads');
+            if (fs.existsSync(candUploads) && fs.statSync(candUploads).isDirectory()) {
+                extractedUploadsDir = candUploads;
+            }
         }
 
         // Liberar conexiones del pool (sin romper el backend: luego lo reiniciamos)
@@ -3927,6 +4029,30 @@ app.post('/api/sync/restaurar', uploadSql.single('archivo'), async (req, res) =>
             await pool.reset();
         } catch {}
 
+        // Si viene uploads dentro del ZIP, lo mezclamos al final (sin borrar lo existente)
+        if (extractedUploadsDir) {
+            const copyMissing = (srcDir, dstDir) => {
+                if (!fs.existsSync(dstDir)) fs.mkdirSync(dstDir, { recursive: true });
+                const entries = fs.readdirSync(srcDir, { withFileTypes: true });
+                for (const ent of entries) {
+                    const srcPath = path.join(srcDir, ent.name);
+                    const dstPath = path.join(dstDir, ent.name);
+                    if (ent.isDirectory()) {
+                        copyMissing(srcPath, dstPath);
+                    } else if (ent.isFile()) {
+                        if (!fs.existsSync(dstPath)) {
+                            try { fs.copyFileSync(srcPath, dstPath); } catch {}
+                        }
+                    }
+                }
+            };
+            try {
+                copyMissing(extractedUploadsDir, uploadsDir);
+            } catch (e) {
+                console.error('Error mezclando uploads:', e);
+            }
+        }
+
         res.json({
             ok: true,
             message: 'Base de datos restaurada correctamente (swap seguro).',
@@ -3940,6 +4066,9 @@ app.post('/api/sync/restaurar', uploadSql.single('archivo'), async (req, res) =>
         if (req.file && req.file.path) {
             try { fs.unlinkSync(req.file.path); } catch {}
         }
+        if (extractedDir) {
+            try { fs.rmSync(extractedDir, { recursive: true, force: true }); } catch {}
+        }
     }
 });
 
@@ -3948,7 +4077,7 @@ app.delete('/api/sync/backup/:nombre', (req, res) => {
     try {
         const cfg = getSyncConfig();
         const oneDrive = detectOneDrivePath();
-        const folder = cfg.backupFolder || (oneDrive ? path.join(oneDrive, 'Backups_CocoCana') : '');
+        const folder = cfg.backupFolder || (oneDrive ? path.join(oneDrive, 'Backups_CocoCana') : path.join(appDataDir, 'backups'));
         const filePath = path.join(folder, req.params.nombre);
         if (fs.existsSync(filePath)) {
             fs.unlinkSync(filePath);
