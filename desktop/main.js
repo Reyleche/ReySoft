@@ -1,5 +1,10 @@
 const { app, BrowserWindow, dialog, ipcMain } = require('electron');
-const { autoUpdater } = require('electron-updater');
+let autoUpdater = null;
+try {
+  ({ autoUpdater } = require('electron-updater'));
+} catch {
+  autoUpdater = null;
+}
 const { spawn, execSync } = require('child_process');
 const path = require('path');
 const http = require('http');
@@ -79,6 +84,10 @@ const setupAutoUpdater = () => {
     return;
   }
 
+  if (!autoUpdater) {
+    return;
+  }
+
   const logStream = fs.createWriteStream(getUpdateLogPath(), { flags: 'a' });
   const log = (message) => {
     logStream.write(`${new Date().toISOString()} ${message}\n`);
@@ -111,11 +120,89 @@ const setupAutoUpdater = () => {
   autoUpdater.checkForUpdatesAndNotify();
 };
 
+const runPostgresInstaller = async () => {
+  const scriptPath = path.join(process.resourcesPath, 'installer', 'install-postgres.ps1');
+  if (!app.isPackaged || !fs.existsSync(scriptPath)) {
+    return { ok: false, error: 'Instalador de Postgres no disponible.' };
+  }
+
+  const logPath = path.join(app.getPath('userData'), 'postgres-install.log');
+  const logStream = fs.createWriteStream(logPath, { flags: 'a' });
+
+  return await new Promise((resolve) => {
+    const psArgs = [
+      '-NoProfile',
+      '-ExecutionPolicy', 'Bypass',
+      '-File',
+      scriptPath
+    ];
+    const child = spawn('powershell.exe', psArgs, {
+      windowsHide: true,
+      env: { ...process.env }
+    });
+    child.stdout.on('data', (d) => logStream.write(d));
+    child.stderr.on('data', (d) => logStream.write(d));
+    child.on('exit', (code) => {
+      logStream.end();
+      if (code === 0) return resolve({ ok: true });
+      resolve({ ok: false, error: `El instalador terminó con código ${code}. Revisa ${logPath}` });
+    });
+    child.on('error', (err) => {
+      logStream.end();
+      resolve({ ok: false, error: String(err) });
+    });
+  });
+};
+
+const callApi = (method, pathName, body, timeoutMs = 15000) => {
+  return new Promise((resolve) => {
+    const postData = body ? JSON.stringify(body) : '';
+    const req = http.request({
+      hostname: 'localhost',
+      port: 3000,
+      path: pathName,
+      method,
+      headers: body ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postData) } : undefined
+    }, (res) => {
+      let data = '';
+      res.on('data', (c) => data += c);
+      res.on('end', () => resolve({ ok: true, status: res.statusCode, data }));
+    });
+    req.on('error', (err) => resolve({ ok: false, error: String(err) }));
+    req.setTimeout(timeoutMs, () => { req.destroy(); resolve({ ok: false, error: 'timeout' }); });
+    if (postData) req.write(postData);
+    req.end();
+  });
+};
+
+let backupInterval = null;
+const setupPeriodicAutoBackup = () => {
+  if (backupInterval) return;
+  // Backup periódico (seguridad): cada 30 minutos
+  backupInterval = setInterval(async () => {
+    try {
+      const cfgRes = await callApi('GET', '/api/sync/config', null, 5000);
+      if (!cfgRes.ok) return;
+      let autoBackup = true;
+      try {
+        const cfg = JSON.parse(cfgRes.data || '{}');
+        if (cfg && typeof cfg.autoBackup === 'boolean') autoBackup = cfg.autoBackup;
+      } catch {}
+      if (!autoBackup) return;
+
+      await callApi('POST', '/api/sync/backup', {}, 120000);
+    } catch {
+      // ignore
+    }
+  }, 30 * 60 * 1000);
+};
+
 const startBackend = () => {
   const backendPath = getBackendPath();
   const env = {
     ...process.env,
-    ELECTRON_RUN_AS_NODE: '1'
+    ELECTRON_RUN_AS_NODE: '1',
+    REYSOFT_APP_DATA: app.getPath('userData')
   };
   backendProcess = spawn(process.execPath, [backendPath], {
     env,
@@ -215,10 +302,31 @@ const createWindow = async () => {
   });
 
   waitForBackend().catch(() => {
-    dialog.showErrorBox(
-      'Servidor no disponible',
-      'No se pudo iniciar el backend. Verifica Postgres e intenta nuevamente.'
-    );
+    const result = dialog.showMessageBoxSync({
+      type: 'error',
+      buttons: ['Instalar Postgres', 'Cerrar'],
+      defaultId: 0,
+      cancelId: 1,
+      title: 'Servidor no disponible',
+      message: 'No se pudo iniciar el backend. En la PC nueva normalmente es porque Postgres no está instalado o no está configurado.'
+    });
+    if (result === 0) {
+      (async () => {
+        const install = await runPostgresInstaller();
+        if (!install.ok) {
+          dialog.showErrorBox('No se pudo instalar Postgres', String(install.error || 'Error desconocido'));
+          return;
+        }
+        // Reintentar backend
+        try {
+          startBackend();
+          await waitForBackend(60, 500);
+          setupPeriodicAutoBackup();
+        } catch {
+          dialog.showErrorBox('Postgres instalado pero backend no responde', 'Revisa backend.log e intenta abrir la app nuevamente.');
+        }
+      })();
+    }
   });
 };
 
@@ -284,6 +392,7 @@ app.whenReady().then(() => {
   startBackend();
   setupAutoUpdater();
   createWindow();
+  setupPeriodicAutoBackup();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -298,19 +407,8 @@ app.on('before-quit', async (e) => {
     e.preventDefault();
     app._backupDone = true;
     try {
-      const cfgRaw = await new Promise((resolve) => {
-        const req = http.request({
-          hostname: 'localhost', port: 3000,
-          path: '/api/sync/config', method: 'GET'
-        }, (res) => {
-          let data = '';
-          res.on('data', c => data += c);
-          res.on('end', () => resolve(data));
-        });
-        req.on('error', () => resolve(null));
-        req.setTimeout(5000, () => { req.destroy(); resolve(null); });
-        req.end();
-      });
+      const cfgRes = await callApi('GET', '/api/sync/config', null, 5000);
+      const cfgRaw = cfgRes && cfgRes.ok ? cfgRes.data : null;
 
       let autoBackup = true;
       try {
@@ -319,27 +417,18 @@ app.on('before-quit', async (e) => {
       } catch {}
 
       if (autoBackup) {
-        await new Promise((resolve) => {
-          const postData = JSON.stringify({});
-          const req = http.request({
-            hostname: 'localhost', port: 3000,
-            path: '/api/sync/backup', method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Content-Length': postData.length }
-          }, (res) => {
-            res.resume();
-            res.on('end', () => resolve(true));
-          });
-          req.on('error', () => resolve(false));
-          req.setTimeout(15000, () => { req.destroy(); resolve(false); });
-          req.write(postData);
-          req.end();
-        });
+        await callApi('POST', '/api/sync/backup', {}, 120000);
       }
     } catch {
       // Silently skip if backup fails
     }
     app.quit();
     return;
+  }
+
+  if (backupInterval) {
+    clearInterval(backupInterval);
+    backupInterval = null;
   }
 
   if (backendProcess) {
