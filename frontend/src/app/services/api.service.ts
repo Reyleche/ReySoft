@@ -7,7 +7,44 @@ import { tap, catchError } from 'rxjs/operators';
   providedIn: 'root'
 })
 export class ApiService {
-  private apiUrl = 'http://localhost:3000/api';
+  private static readonly SERVER_BASE_KEY = 'reysoft_server_base';
+
+  private normalizeServerBase(input: string): string {
+    let value = String(input || '').trim();
+    if (!value) return 'http://localhost:3000';
+    if (!/^https?:\/\//i.test(value)) {
+      value = `http://${value}`;
+    }
+    value = value.replace(/\/+$/, '');
+    // Si no trae puerto, asumimos 3000 (backend)
+    try {
+      const u = new URL(value);
+      if (!u.port) {
+        u.port = '3000';
+      }
+      return u.toString().replace(/\/+$/, '');
+    } catch {
+      return 'http://localhost:3000';
+    }
+  }
+
+  getServerBase(): string {
+    const saved = typeof window !== 'undefined' ? window.localStorage.getItem(ApiService.SERVER_BASE_KEY) : null;
+    return this.normalizeServerBase(saved || 'http://localhost:3000');
+  }
+
+  setServerBase(input: string): void {
+    const normalized = this.normalizeServerBase(input);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(ApiService.SERVER_BASE_KEY, normalized);
+    }
+    // Si cambia servidor, invalidamos cachés
+    this.usuariosCache = [];
+  }
+
+  private get apiUrl(): string {
+    return `${this.getServerBase()}/api`;
+  }
   
   // AQUÍ ESTÁ EL TRUCO: Una variable para recordar los usuarios
   private usuariosCache: any[] = [];

@@ -28,6 +28,17 @@ import { AuthService } from '../../services/auth.service';
 
             <div *ngIf="!cargando && usuarios.length === 0" class="error-state fade-in">
                 <p>No se encontró el servidor.</p>
+
+                <div class="server-box">
+                  <label class="server-label">Servidor (IP de la laptop)</label>
+                  <input class="server-input" [(ngModel)]="serverInput" placeholder="http://192.168.1.50:3000" />
+                  <div class="server-actions">
+                    <button (click)="guardarServidor()" class="btn-server">Guardar</button>
+                    <button (click)="resetServidor()" class="btn-server btn-server-secondary">Local</button>
+                  </div>
+                  <div class="server-hint">Actual: {{ serverBase }}</div>
+                </div>
+
                 <button (click)="cargarUsuarios()" class="btn-retry">
                     🔄 Reintentar Conexión
                 </button>
@@ -106,6 +117,38 @@ import { AuthService } from '../../services/auth.service';
 
     /* ESTADO DE ERROR Y REINTENTO */
     .error-state p { color: #e74c3c; font-weight: bold; margin-bottom: 10px; }
+
+    .server-box {
+      text-align: left;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 12px;
+      padding: 12px;
+      margin: 12px 0;
+    }
+    .server-label { display: block; font-size: 0.8rem; opacity: 0.85; margin-bottom: 6px; }
+    .server-input {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.15);
+      background: rgba(0,0,0,0.2);
+      color: #fff;
+      outline: none;
+    }
+    .server-actions { display: flex; gap: 10px; margin-top: 10px; }
+    .btn-server {
+      flex: 1;
+      border: none;
+      padding: 10px 12px;
+      color: white;
+      border-radius: 10px;
+      cursor: pointer;
+      background: rgba(46,204,113,0.35);
+    }
+    .btn-server-secondary { background: rgba(255,255,255,0.15); }
+    .server-hint { margin-top: 8px; font-size: 0.75rem; opacity: 0.7; }
+
     .btn-retry { 
         background: #e67e22; border: none; padding: 12px 30px; 
         color: white; border-radius: 50px; cursor: pointer; 
@@ -161,6 +204,8 @@ export class LoginComponent implements OnInit {
   pin: string = '';
   error: string = '';
   cargando: boolean = true; // Inicia cargando automáticamente
+  serverBase: string = '';
+  serverInput: string = '';
 
   constructor(
     private api: ApiService,
@@ -171,6 +216,8 @@ export class LoginComponent implements OnInit {
   ) {}
 
   async ngOnInit() {
+    this.serverBase = this.api.getServerBase();
+    this.serverInput = this.serverBase;
     const reason = this.route.snapshot.queryParamMap.get('reason');
     if (reason === 'expired') {
       this.error = 'Sesión expirada. Inicia nuevamente.';
@@ -180,6 +227,19 @@ export class LoginComponent implements OnInit {
       this.error = 'Sesión cerrada por seguridad. Inicia nuevamente.';
     }
     await this.cargarUsuarios();
+  }
+
+  guardarServidor() {
+    this.api.setServerBase(this.serverInput);
+    this.serverBase = this.api.getServerBase();
+    this.usuarioSeleccionado = null;
+    this.pin = '';
+    this.cargarUsuarios();
+  }
+
+  resetServidor() {
+    this.serverInput = 'http://localhost:3000';
+    this.guardarServidor();
   }
 
   async cargarUsuarios() {

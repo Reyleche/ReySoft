@@ -9,6 +9,7 @@ const XLSX = require('xlsx');
 
 const app = express();
 const port = 3000;
+const host = process.env.HOST || '0.0.0.0';
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret_reysoft';
 const JWT_EXPIRES_IN = '8h';
 
@@ -3965,10 +3966,16 @@ app.get('/api/backup/descargar', async (req, res) => {
         const pgDump = findPgBin('pg_dump.exe');
         if (!pgDump) return res.status(500).json({ error: 'pg_dump no encontrado' });
 
+        const pgUser = process.env.PGUSER || 'postgres';
+        const pgDb = process.env.PGDATABASE || 'db_cococana';
+        const pgHost = process.env.PGHOST || 'localhost';
+        const pgPort = String(process.env.PGPORT || '5432');
+        const pgPassword = process.env.PGPASSWORD || 'rey';
+
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
         const backupFile = path.join(os.tmpdir(), `backup_cococana_${timestamp}.sql`);
-        const cmd = `"${pgDump}" -U postgres -p 5432 -h localhost -d db_cococana -F p -f "${backupFile}"`;
-        execSync(cmd, { env: { ...process.env, PGPASSWORD: 'rey' }, timeout: 60000 });
+        const cmd = `"${pgDump}" -U "${pgUser}" -p ${pgPort} -h "${pgHost}" -d "${pgDb}" --encoding=UTF8 --no-owner --no-privileges -F p -f "${backupFile}"`;
+        execSync(cmd, { env: { ...process.env, PGPASSWORD: pgPassword, PGCLIENTENCODING: 'UTF8' }, timeout: 60000 });
 
         res.download(backupFile, `backup_cococana_${timestamp}.sql`, () => {
             try { fs.unlinkSync(backupFile); } catch(e) {}
@@ -3981,8 +3988,8 @@ app.get('/api/backup/descargar', async (req, res) => {
 
 initDb()
     .then(() => {
-        app.listen(port, () => {
-            console.log(`🚀 Servidor backend corriendo en puerto ${port}`);
+        app.listen(port, host, () => {
+            console.log(`🚀 Servidor backend corriendo en http://${host}:${port}`);
         });
     })
     .catch((err) => {

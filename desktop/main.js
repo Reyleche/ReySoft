@@ -254,12 +254,55 @@ const createWindow = async () => {
   const uiLog = fs.createWriteStream(getUiLogPath(), { flags: 'a' });
   uiLog.write(`Renderer path: ${rendererPath}\n`);
 
+  const closeSplash = () => {
+    if (splashWindow && !splashWindow.isDestroyed()) {
+      try { splashWindow.close(); } catch {}
+    }
+    splashWindow = null;
+  };
+
+  const showMain = (reason) => {
+    try {
+      uiLog.write(`Show main (${reason})\n`);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.show();
+        mainWindow.focus();
+      }
+    } catch (e) {
+      uiLog.write(`Show main error: ${String(e)}\n`);
+    }
+    closeSplash();
+  };
+
+  // Si por alguna razón el renderer se queda colgado, no dejamos el splash infinito
+  const splashTimeout = setTimeout(() => {
+    showMain('timeout');
+  }, 10000);
+
+  mainWindow.on('closed', () => {
+    clearTimeout(splashTimeout);
+    closeSplash();
+  });
+
+  mainWindow.webContents.on('did-start-loading', () => uiLog.write('UI did-start-loading\n'));
+  mainWindow.webContents.on('dom-ready', () => uiLog.write('UI dom-ready\n'));
+  mainWindow.webContents.on('did-finish-load', () => {
+    uiLog.write('UI did-finish-load\n');
+    clearTimeout(splashTimeout);
+    showMain('did-finish-load');
+  });
+  mainWindow.webContents.on('did-stop-loading', () => uiLog.write('UI did-stop-loading\n'));
+  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    uiLog.write(`console[${level}] ${message} (${sourceId}:${line})\n`);
+  });
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    uiLog.write(`render-process-gone: ${JSON.stringify(details)}\n`);
+  });
+
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDesc, validatedURL) => {
     uiLog.write(`Load fail: ${errorCode} ${errorDesc} ${validatedURL}\n`);
-    if (splashWindow) {
-      splashWindow.close();
-      splashWindow = null;
-    }
+    clearTimeout(splashTimeout);
+    closeSplash();
     dialog.showErrorBox(
       'Error de interfaz',
       'No se pudo cargar la interfaz. Revisa ui.log y vuelve a intentar.'
@@ -268,10 +311,8 @@ const createWindow = async () => {
 
   if (!fs.existsSync(rendererPath)) {
     uiLog.write(`Renderer missing: ${rendererPath}\n`);
-    if (splashWindow) {
-      splashWindow.close();
-      splashWindow = null;
-    }
+    clearTimeout(splashTimeout);
+    closeSplash();
     dialog.showErrorBox(
       'Error de interfaz',
       `No se encontro la interfaz en ${rendererPath}. Reinstala el instalador o genera el build del frontend.`
@@ -279,26 +320,21 @@ const createWindow = async () => {
     return;
   }
 
-  try {
-    await mainWindow.loadFile(rendererPath);
-  } catch (err) {
+  // Importante: NO hacer await aquí. Si Electron se queda esperando, el splash se queda infinito.
+  mainWindow.loadFile(rendererPath).catch((err) => {
     uiLog.write(`Load error: ${String(err)}\n`);
-    if (splashWindow) {
-      splashWindow.close();
-      splashWindow = null;
-    }
+    clearTimeout(splashTimeout);
+    closeSplash();
     dialog.showErrorBox(
       'Error de interfaz',
       'No se pudo cargar la interfaz. Revisa ui.log y vuelve a intentar.'
     );
-  }
+  });
 
+  // Fallback adicional: algunos equipos no disparan ready-to-show de forma confiable
   mainWindow.once('ready-to-show', () => {
-    mainWindow.show();
-    if (splashWindow) {
-      splashWindow.close();
-      splashWindow = null;
-    }
+    clearTimeout(splashTimeout);
+    showMain('ready-to-show');
   });
 
   waitForBackend().catch(() => {
