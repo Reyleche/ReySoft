@@ -68,7 +68,7 @@ const waitForBackend = (retries = 40, delayMs = 500) => {
   });
 };
 
-const waitForBackendAndDb = (retries = 120, delayMs = 400) => {
+const waitForBackendAndDb = (retries = 80, delayMs = 300) => {
   return new Promise((resolve, reject) => {
     const attempt = async (left) => {
       try {
@@ -275,14 +275,16 @@ const startBackend = () => {
 const createWindow = async () => {
   splashWindow = new BrowserWindow({
     width: 520,
-    height: 520,
+    height: 440,
     resizable: false,
     frame: false,
     transparent: false,
     backgroundColor: '#cfb57f',
     alwaysOnTop: true,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js')
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false
     }
   });
   const splashLogo = getSplashLogoPath();
@@ -310,7 +312,7 @@ const createWindow = async () => {
   const uiLog = fs.createWriteStream(getUiLogPath(), { flags: 'a' });
   uiLog.write(`Renderer path: ${rendererPath}\n`);
 
-  const MIN_SPLASH_MS = 1400;
+  const MIN_SPLASH_MS = 5000;
   const splashShownAt = Date.now();
   let mainShowRequested = false;
   let mainShowTimer = null;
@@ -365,13 +367,13 @@ const createWindow = async () => {
       if (uiReady && !backendReady) {
         showMain('ui-ready-fallback');
       }
-    }, 6000);
+    }, 3500);
   };
 
   // Si por alguna razón el renderer se queda colgado, no dejamos el splash infinito
   const splashTimeout = setTimeout(() => {
     showMain('timeout');
-  }, 25000);
+  }, 12000);
 
   mainWindow.on('closed', () => {
     clearTimeout(splashTimeout);

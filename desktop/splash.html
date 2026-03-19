@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ReySoft Coco y Cana</title>
+  <title>ReySoft Splash</title>
   <style>
     * { box-sizing: border-box; }
     html, body { width: 100%; height: 100%; margin: 0; }
@@ -16,11 +16,12 @@
     }
     .shell {
       width: 520px;
-      height: 520px;
+      height: 440px;
       position: relative;
       overflow: hidden;
-      contain: content;
+      contain: strict;
       isolation: isolate;
+      border-radius: 10px;
     }
     .stage {
       position: absolute;
@@ -29,111 +30,136 @@
       place-items: center;
       transform: translateZ(0);
     }
-    .tri {
-      width: 420px;
-      height: 420px;
+    .triquetra {
+      width: 438px;
+      height: 438px;
       overflow: visible;
     }
-    .loop {
+
+    .leaf {
       fill: none;
       stroke: #120d0a;
-      stroke-width: 18;
+      stroke-width: 21;
       stroke-linecap: round;
       stroke-linejoin: round;
-      stroke-dasharray: 610;
-      stroke-dashoffset: 610;
-      animation: draw 1.15s ease-out forwards;
-      filter: drop-shadow(0 2px 0 rgba(0, 0, 0, 0.08));
+      stroke-dasharray: 760;
+      stroke-dashoffset: 760;
+      animation: drawLeaf 1.75s cubic-bezier(0.25, 0.85, 0.25, 1) forwards;
+      will-change: stroke-dashoffset;
     }
-    .l1 { animation-delay: 0.06s; }
-    .l2 { animation-delay: 0.18s; }
-    .l3 { animation-delay: 0.30s; }
+    .l1 { animation-delay: 0.04s; }
+    .l2 { animation-delay: 0.24s; }
+    .l3 { animation-delay: 0.44s; }
 
-    .badge {
+    .badge-pop {
+      --from-x: 0px;
+      --from-y: 0px;
       opacity: 0;
-      transform: translateY(8px) scale(0.94);
+      transform: translate(var(--from-x), var(--from-y)) scale(0.72);
       transform-origin: center;
-      animation: pop 0.45s cubic-bezier(0.2, 0.9, 0.2, 1) forwards;
+      animation: flyFromCenter 0.72s cubic-bezier(0.22, 0.8, 0.2, 1) forwards;
       will-change: transform, opacity;
     }
-    .top { animation-delay: 0.62s; }
-    .left { animation-delay: 0.78s; }
-    .right { animation-delay: 0.92s; }
+    .top { animation-delay: 0.98s; }
+    .left { animation-delay: 1.12s; }
+    .right { animation-delay: 1.26s; }
 
-    .rs-circle {
+    .rs-bg {
       fill: #1f2937;
       stroke: #f8e8c0;
-      stroke-width: 4;
+      stroke-width: 3;
     }
-    .rs-text {
+
+    .rs-letter {
       fill: #f8e8c0;
-      font-size: 44px;
+      font-size: 30px;
       font-weight: 800;
       text-anchor: middle;
       dominant-baseline: middle;
     }
 
-    .brand-plate {
-      fill: #fffdf8;
-      stroke: #8f7a4f;
-      stroke-width: 2;
+    .center-badge {
+      fill: #111827;
+      stroke: #f8e8c0;
+      stroke-width: 2.5;
     }
 
-    @keyframes draw {
-      from { stroke-dashoffset: 610; }
-      to { stroke-dashoffset: 0; }
+    .center-text {
+      fill: #f8e8c0;
+      font-size: 19px;
+      font-weight: 800;
+      text-anchor: middle;
+      dominant-baseline: middle;
     }
 
-    @keyframes pop {
-      from { opacity: 0; transform: translateY(8px) scale(0.94); }
-      to { opacity: 1; transform: translateY(0) scale(1); }
+    @keyframes drawLeaf {
+      0% { stroke-dashoffset: 760; }
+      70% { stroke-dashoffset: 0; }
+      100% { stroke-dashoffset: 0; }
+    }
+
+    @keyframes flyFromCenter {
+      0% { opacity: 0; transform: translate(var(--from-x), var(--from-y)) scale(0.72); }
+      60% { opacity: 1; }
+      100% { opacity: 1; transform: translate(0, 0) scale(1); }
     }
 
     @media (prefers-reduced-motion: reduce) {
-      .loop, .badge { animation: none; opacity: 1; transform: none; stroke-dashoffset: 0; }
+      .leaf, .badge-pop {
+        animation: none;
+        opacity: 1;
+        transform: none;
+        stroke-dashoffset: 0;
+      }
     }
   </style>
 </head>
 <body>
   <div class="shell">
     <div class="stage">
-      <svg class="tri" viewBox="0 0 420 420" aria-label="Triqueta ReySoft">
-        <!-- Triqueta ligera de 3 lazos -->
-        <circle class="loop l1" cx="210" cy="118" r="92"></circle>
-        <circle class="loop l2" cx="126" cy="266" r="92"></circle>
-        <circle class="loop l3" cx="294" cy="266" r="92"></circle>
+      <svg class="triquetra" viewBox="0 0 420 420" aria-label="Triqueta ReySoft">
+        <!-- Triqueta estilo clásico: 3 hojas puntiagudas -->
+        <g transform="translate(210 224)">
+          <g>
+            <path class="leaf l1" d="M 0 -162 C 94 -102 96 18 0 84 C -96 18 -94 -102 0 -162 Z"></path>
+            <path class="leaf l2" d="M 0 -162 C 94 -102 96 18 0 84 C -96 18 -94 -102 0 -162 Z" transform="rotate(120)"></path>
+            <path class="leaf l3" d="M 0 -162 C 94 -102 96 18 0 84 C -96 18 -94 -102 0 -162 Z" transform="rotate(240)"></path>
 
-        <!-- Arista superior: Coco y Cana -->
-        <g class="badge top" transform="translate(210 28)">
-          <rect class="brand-plate" x="-72" y="-6" rx="16" ry="16" width="144" height="86"></rect>
-          <image id="brandLogo" x="-64" y="2" width="128" height="68" preserveAspectRatio="xMidYMid meet"></image>
-        </g>
+          <!-- Arriba: R -->
+            <g transform="translate(0 -98)">
+              <g class="badge-pop top" style="--from-x:0px;--from-y:98px;">
+                <circle class="rs-bg" r="22"></circle>
+                <text class="rs-letter" y="1">R</text>
+              </g>
+            </g>
 
-        <!-- Arista inferior izquierda: R -->
-        <g class="badge left" transform="translate(92 324)">
-          <circle class="rs-circle" r="34"></circle>
-          <text class="rs-text" y="1">R</text>
-        </g>
+          <!-- Izquierda abajo: X -->
+            <g transform="translate(-86 56)">
+              <g class="badge-pop left" style="--from-x:86px;--from-y:-56px;">
+                <circle class="rs-bg" r="22"></circle>
+                <text class="rs-letter" y="1">X</text>
+              </g>
+            </g>
 
-        <!-- Arista inferior derecha: S -->
-        <g class="badge right" transform="translate(328 324)">
-          <circle class="rs-circle" r="34"></circle>
-          <text class="rs-text" y="1">S</text>
+          <!-- Derecha abajo: S -->
+            <g transform="translate(86 56)">
+              <g class="badge-pop right" style="--from-x:-86px;--from-y:-56px;">
+                <circle class="rs-bg" r="22"></circle>
+                <text class="rs-letter" y="1">S</text>
+              </g>
+            </g>
+
+          <!-- Centro: 33 -->
+            <g transform="translate(0 -2)">
+              <g class="badge-pop" style="--from-x:0px;--from-y:2px;animation-delay:1.40s;">
+                <ellipse class="center-badge" rx="24" ry="16"></ellipse>
+                <text class="center-text" y="1">33</text>
+              </g>
+            </g>
+          </g>
         </g>
       </svg>
     </div>
   </div>
-
-  <script>
-    (function () {
-      const logoEl = document.getElementById('brandLogo');
-      const params = new URLSearchParams(window.location.search);
-      const logoUrl = params.get('logo');
-      if (logoEl && logoUrl) {
-        logoEl.setAttributeNS('http://www.w3.org/1999/xlink', 'href', logoUrl);
-        logoEl.setAttribute('href', logoUrl);
-      }
-    })();
-  </script>
 </body>
 </html>
