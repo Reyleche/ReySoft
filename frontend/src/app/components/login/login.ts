@@ -1,4 +1,4 @@
-import { ChangeDetectorRef, Component, OnInit } from '@angular/core';
+import { ChangeDetectorRef, Component, HostListener, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
@@ -129,12 +129,15 @@ import { AuthService } from '../../services/auth.service';
     .server-label { display: block; font-size: 0.8rem; opacity: 0.85; margin-bottom: 6px; }
     .server-input {
       width: 100%;
+      max-width: 100%;
+      min-width: 0;
       padding: 10px 12px;
       border-radius: 10px;
       border: 1px solid rgba(255,255,255,0.15);
       background: rgba(0,0,0,0.2);
       color: #fff;
       outline: none;
+      box-sizing: border-box;
     }
     .server-actions { display: flex; gap: 10px; margin-top: 10px; }
     .btn-server {
@@ -227,6 +230,37 @@ export class LoginComponent implements OnInit {
       this.error = 'Sesión cerrada por seguridad. Inicia nuevamente.';
     }
     await this.cargarUsuarios();
+  }
+
+  @HostListener('document:keydown', ['$event'])
+  onKeydown(e: KeyboardEvent) {
+    if (this.cargando) return;
+
+    if (e.key === 'Escape') {
+      if (this.usuarioSeleccionado) {
+        e.preventDefault();
+        this.cancelar();
+        return;
+      }
+      if (!this.usuarioSeleccionado && this.usuarios.length === 0) {
+        e.preventDefault();
+        this.resetServidor();
+        return;
+      }
+    }
+
+    if (e.key === 'Enter') {
+      if (this.usuarioSeleccionado) {
+        e.preventDefault();
+        this.ingresar();
+        return;
+      }
+      if (!this.usuarioSeleccionado && this.usuarios.length === 0) {
+        e.preventDefault();
+        this.guardarServidor();
+        return;
+      }
+    }
   }
 
   guardarServidor() {

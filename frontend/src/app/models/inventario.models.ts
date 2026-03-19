@@ -6,6 +6,7 @@ export interface InsumoItem {
   unidad_medida: string;
   stock_actual: number;
   stock_minimo: number;
+  costo_unitario?: number;
 }
 
 export interface MovimientoInventarioItem {
@@ -37,6 +38,30 @@ export class MovimientoInventarioForm {
   toPayload(tipo: TipoMovimientoInventario, usuario?: string): any {
     return {
       insumo_id: this.insumoId,
+      tipo,
+      cantidad: Number(this.cantidad),
+      motivo: this.motivo?.trim() || null,
+      referencia: this.referencia?.trim() || null,
+      usuario: usuario?.trim() || null
+    };
+  }
+}
+
+export class MovimientoProductoForm {
+  constructor(
+    public productoId: number | null = null,
+    public cantidad: number | null = null,
+    public motivo: string = '',
+    public referencia: string = ''
+  ) {}
+
+  isValid(): boolean {
+    return !!this.productoId && this.cantidad !== null && this.cantidad > 0;
+  }
+
+  toPayload(tipo: 'INGRESO' | 'EGRESO', usuario?: string): any {
+    return {
+      producto_id: this.productoId,
       tipo,
       cantidad: Number(this.cantidad),
       motivo: this.motivo?.trim() || null,

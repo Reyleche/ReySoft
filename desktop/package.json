@@ -1,6 +1,6 @@
 {
   "name": "reysoft-coco-cana-desktop",
-  "version": "1.1.5",
+  "version": "1.1.8",
   "main": "main.js",
   "private": true,
   "repository": {
@@ -9,10 +9,12 @@
   },
   "scripts": {
     "start": "electron .",
+    "version:patch": "npm version patch --no-git-tag-version",
     "build:ui": "cd ../frontend && npm install && npm run build",
-    "build:backend": "cd ../backend && npm install",
+    "build:backend": "cd ../backend && npm ci --omit=dev",
     "prepare:renderer": "node scripts/copy-renderer.js",
-    "dist": "npm run build:ui && npm run build:backend && npm run prepare:renderer && electron-builder --win"
+    "dist": "npm run build:ui && npm run build:backend && npm run prepare:renderer && electron-builder --win",
+    "dist:versioned": "npm run version:patch && npm run dist"
   },
   "dependencies": {
     "electron-updater": "^6.3.0"
@@ -42,6 +44,10 @@
       {
         "from": "../backend",
         "to": "backend"
+      },
+      {
+        "from": "seed",
+        "to": "seed"
       },
       {
         "from": "installer",

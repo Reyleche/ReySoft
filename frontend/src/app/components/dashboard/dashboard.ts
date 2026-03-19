@@ -11,6 +11,7 @@ import autoTable from 'jspdf-autotable';
 import { Chart, registerables } from 'chart.js';
 import {
   MovimientoInventarioForm,
+  MovimientoProductoForm,
   ProduccionInventarioForm,
   TransformacionInventarioForm,
   KardexFiltro,
@@ -58,6 +59,30 @@ interface Venta {
   styleUrls: ['./dashboard.css']
 })
 export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
+  invSugMotivos: string[] = ['Ajuste de inventario', 'Robo', 'Deterioro', 'Donación', 'Promoción'];
+  invSugReferencias: string[] = ['Reporte mensual', 'Cierre anual', 'Incidente'];
+  invSugerenciaAplicada: boolean = false;
+  ingresoEntidad: 'insumo' | 'producto' = 'insumo';
+  ingresoStockInfo: any = null;
+  ingresoProductoMovForm = new MovimientoProductoForm();
+  egresoEntidad: 'insumo' | 'producto' = 'insumo';
+  egresoStockInfo: any = null;
+  egresoProductoMovForm = new MovimientoProductoForm();
+  cajaAccionCargando: boolean = false;
+  facturaDetalleSrcDoc: any;
+  probandoImpresion: boolean = false;
+  resetIngresoForm() {
+    this.ingresoForm = new MovimientoInventarioForm();
+    this.ingresoProductoMovForm = new MovimientoProductoForm();
+    this.actualizarIngresoStockInfo();
+  }
+  resetEgresoForm() {
+    this.egresoForm = new MovimientoInventarioForm();
+    this.egresoProductoMovForm = new MovimientoProductoForm();
+    this.actualizarEgresoStockInfo();
+  }
+  probarImpresion() { /* stub */ }
+
   usuario: any = null;
   vistaActual: string = 'resumen'; // Opciones: 'resumen', 'ventas', 'mesas', 'inventario', 'gastos', 'reportes'
   fechaHoy: string = new Date().toLocaleDateString('es-ES', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
@@ -87,18 +112,21 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
     nombre: '',
     stock_actual: 0,
     unidad_medida: 'UND',
-    stock_minimo: 0
-  };
+    stock_minimo: 0,
+      costo_unitario: 0
+    };
 
   nuevoProducto = {
-    nombre: '',
-    precio: 0,
-    id_categoria: '',
-    es_preparado: true,
-    stock_actual: 0,
-    unidad_medida: 'UND',
-    stock_minimo: 0
-  };
+      nombre: '',
+      precio: 0,
+      id_categoria: '',
+      es_preparado: true,
+      stock_actual: 0,
+      unidad_medida: 'UND',
+      stock_minimo: 0,
+      costo_produccion: 0,
+      insumo_equivalente_id: ''
+    };
   nuevoProductoImagen: File | null = null;
 
   editandoInsumo: any = null;
@@ -117,8 +145,9 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
     gananciasMes: 0.00,
     gastosMes: 0.00,
     gananciasBaseMes: 0.00,
-    gastosFacturasMes: 0.00
-  };
+    gastosFacturasMes: 0.00,
+      totalCostoVentas: 0.00
+    };
 
   gastosItems: any[] = [];
   gastoForm = {
@@ -235,8 +264,8 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
 
   bodegaInsumos: any[] = [];
   bodegaProductos: any[] = [];
-  bodegaNuevoInsumo = { nombre: '', stock_actual: 0, unidad_medida: 'UND', stock_minimo: 0 };
-  bodegaNuevoProducto = { nombre: '', precio: 0, id_categoria: '', es_preparado: true };
+  bodegaNuevoInsumo = { nombre: '', stock_actual: 0, unidad_medida: 'UND', stock_minimo: 0, costo_unitario: 0 };
+  bodegaNuevoProducto = { nombre: '', precio: 0, id_categoria: '', es_preparado: true, costo_produccion: 0, insumo_equivalente_id: '' };
   bodegaTransfer = { insumoId: null as number | null, cantidad: 0 };
 
   editandoVenta: Venta | null = null;
@@ -361,7 +390,7 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
   imprimiendoFactura: boolean = false;
 
   // Checkbox imprimir al pagar
-  pagoImprimirRecibo: boolean = true;
+  pagoImprimirRecibo: boolean = false;
 
   // Datos empresa para factura
   readonly empresaInfo = {
@@ -383,6 +412,8 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
   syncError: string = '';
   syncRestaurando: boolean = false;
   syncBackupFolder: string = '';
+  syncDiagnostico: any = null;
+  syncDiagnosticoCargando: boolean = false;
 
   constructor(
     private router: Router,
@@ -509,6 +540,7 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
     if (vista === 'sincronizacion') {
       this.cargarSyncConfig();
       this.cargarSyncBackups();
+      this.cargarSyncDiagnostico();
     }
   }
 
@@ -574,7 +606,7 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
 
   productosFiltrados(): any[] {
     const term = this.normalizarTexto(this.busquedaProducto);
-    const base = this.productos.filter((prod) => !this.esComboProducto(prod));
+    const base = this.productos
     if (!term) return base;
     return base.filter((prod) =>
       this.normalizarTexto(prod?.nombre).includes(term)
@@ -845,6 +877,8 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
     this.pagoPartes = [
       { metodo: 'EFECTIVO', monto: Number(venta.total || 0), banco: '', comprobante: '' }
     ];
+    // Por defecto dejamos la autoimpresion apagada para evitar molestias al cobrar.
+    this.pagoImprimirRecibo = false;
     this.pagoEsMesa = esMesa;
     this.cargarClientes();
     this.pagoModalAbierto = true;
@@ -1478,7 +1512,8 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
                   gananciasMes,
                   gastosMes,
                   gananciasBaseMes,
-                  gastosFacturasMes
+                  gastosFacturasMes,
+                    totalCostoVentas: Number(mesData?.totalCostoVentas || 0)
                 };
                 this.cargarAnalyticsExtra();
               },
@@ -1494,7 +1529,8 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
                   gananciasMes,
                   gastosMes,
                   gananciasBaseMes,
-                  gastosFacturasMes
+                  gastosFacturasMes,
+                    totalCostoVentas: 0
                 };
               }
             });
@@ -1525,8 +1561,8 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
                   gananciasMes: 0,
                   gastosMes: 0,
                   gananciasBaseMes: 0,
-                  gastosFacturasMes: 0
-                };
+                  gastosFacturasMes: 0,
+                    totalCostoVentas: 0};
               },
               error: () => {
                 this.resumen = {
@@ -1540,8 +1576,8 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
                   gananciasMes: 0,
                   gastosMes: 0,
                   gananciasBaseMes: 0,
-                  gastosFacturasMes: 0
-                };
+                  gastosFacturasMes: 0,
+                    totalCostoVentas: 0};
               }
             });
           }
@@ -2016,7 +2052,7 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
     doc.text(`Generado: ${new Date().toLocaleString('es-EC')}`, 40, 222);
 
     const resumenObj = this.reporteData?.resumen || {};
-    const resumenRows = Object.entries(resumenObj).map(([key, value]) => [this.humanizarKey(key), this.formatearValor(value)]);
+    const resumenRows = Object.entries(resumenObj).map(([key, value]) => [this.humanizarKey(key), this.formatearValor(value, key)]);
     let y = 238;
     if (resumenRows.length) {
       autoTable(doc, {
@@ -2046,7 +2082,7 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
 
       const keys = Object.keys(items[0]).slice(0, 8);
       const head = [keys.map((key) => this.humanizarKey(key))];
-      const body = items.map((item: any) => keys.map((key) => this.formatearValor(item?.[key])));
+      const body = items.map((item: any) => keys.map((key) => this.formatearValor(item?.[key], key)));
 
       autoTable(doc, {
         startY: y,
@@ -2241,9 +2277,36 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
       .replace(/\b\w/g, (l) => l.toUpperCase());
   }
 
-  private formatearValor(value: any): string {
+  private formatearValor(value: any, key: string = ''): string {
     if (value === null || value === undefined) return '-';
-    if (typeof value === 'number') return Number(value).toLocaleString('es-EC', { maximumFractionDigits: 2 });
+    const lowerKey = String(key || '').toLowerCase();
+
+    if (value instanceof Date || lowerKey.includes('fecha') || lowerKey.endsWith('_at')) {
+      const dt = value instanceof Date ? value : new Date(String(value));
+      if (!Number.isNaN(dt.getTime())) {
+        return dt.toLocaleString('es-EC', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit'
+        });
+      }
+    }
+
+    const numero = typeof value === 'number' ? value : Number(value);
+    if (!Number.isNaN(numero) && Number.isFinite(numero)) {
+      const esCantidadInventario = /(cantidad|stock|saldo|existencia|totalitems|totalinsumos|totalproductos)/.test(lowerKey);
+      const esMoneda = /(monto|total|costo|precio|subtotal|impuesto|ingreso|egreso|ganancia|ticket)/.test(lowerKey);
+      if (esCantidadInventario) {
+        return Math.round(numero).toLocaleString('es-EC', { maximumFractionDigits: 0 });
+      }
+      if (esMoneda) {
+        return numero.toLocaleString('es-EC', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      }
+      return numero.toLocaleString('es-EC', { maximumFractionDigits: 2 });
+    }
+
     return String(value);
   }
 
@@ -2570,7 +2633,7 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
     if (!this.bodegaNuevoInsumo.nombre || !this.bodegaNuevoInsumo.unidad_medida) return;
     this.api.crearBodegaInsumo(this.bodegaNuevoInsumo).subscribe({
       next: () => {
-        this.bodegaNuevoInsumo = { nombre: '', stock_actual: 0, unidad_medida: 'UND', stock_minimo: 0 };
+        this.bodegaNuevoInsumo = { nombre: '', stock_actual: 0, unidad_medida: 'UND', stock_minimo: 0, costo_unitario: 0 };
         this.cargarBodega();
         this.postActionRefresh();
       },
@@ -2589,7 +2652,7 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
     };
     this.api.crearBodegaProducto(payload).subscribe({
       next: () => {
-        this.bodegaNuevoProducto = { nombre: '', precio: 0, id_categoria: '', es_preparado: true };
+        this.bodegaNuevoProducto = { nombre: '', precio: 0, id_categoria: '', es_preparado: true, costo_produccion: 0, insumo_equivalente_id: '' };
         this.cargarBodega();
         this.postActionRefresh();
       },
@@ -2764,7 +2827,7 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
     if (!this.nuevoInsumo.nombre || !this.nuevoInsumo.unidad_medida) return;
     this.api.crearInsumo(this.nuevoInsumo).subscribe({
       next: () => {
-        this.nuevoInsumo = { nombre: '', stock_actual: 0, unidad_medida: 'UND', stock_minimo: 0 };
+        this.nuevoInsumo = { nombre: '', stock_actual: 0, unidad_medida: 'UND', stock_minimo: 0, costo_unitario: 0 };
         this.cargarInventario();
         this.postActionRefresh();
       },
@@ -2836,7 +2899,7 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
             error: (err) => { this.errorInventario = this.getErrorMessage(err, 'No se pudo subir la imagen.'); }
           });
         }
-        this.nuevoProducto = { nombre: '', precio: 0, id_categoria: '', es_preparado: true, stock_actual: 0, unidad_medida: 'UND', stock_minimo: 0 };
+        this.nuevoProducto = { nombre: '', precio: 0, id_categoria: '', es_preparado: true, stock_actual: 0, unidad_medida: 'UND', stock_minimo: 0, costo_produccion: 0, insumo_equivalente_id: '' };
         this.nuevoProductoImagen = null;
         this.cargarInventario();
         this.postActionRefresh();
@@ -2929,12 +2992,22 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
   }
 
   registrarIngreso() {
-    if (!this.ingresoForm.isValid()) return;
-    this.api.crearMovimientoInventario(this.ingresoForm.toPayload('INGRESO', this.usuario?.nombre)).subscribe({
+    const request$ = this.ingresoEntidad === 'producto'
+      ? (this.ingresoProductoMovForm.isValid()
+        ? this.api.crearMovimientoProductoInventario(this.ingresoProductoMovForm.toPayload('INGRESO', this.usuario?.nombre))
+        : null)
+      : (this.ingresoForm.isValid()
+        ? this.api.crearMovimientoInventario(this.ingresoForm.toPayload('INGRESO', this.usuario?.nombre))
+        : null);
+
+    if (!request$) return;
+
+    request$.subscribe({
       next: () => {
-        this.ingresoForm = new MovimientoInventarioForm();
+        this.resetIngresoForm();
         this.cargarInventario();
         this.cargarMovimientos();
+        this.cargarKardex();
         this.postActionRefresh();
       },
       error: (err) => {
@@ -2944,12 +3017,22 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
   }
 
   registrarEgreso() {
-    if (!this.egresoForm.isValid()) return;
-    this.api.crearMovimientoInventario(this.egresoForm.toPayload('EGRESO', this.usuario?.nombre)).subscribe({
+    const request$ = this.egresoEntidad === 'producto'
+      ? (this.egresoProductoMovForm.isValid()
+        ? this.api.crearMovimientoProductoInventario(this.egresoProductoMovForm.toPayload('EGRESO', this.usuario?.nombre))
+        : null)
+      : (this.egresoForm.isValid()
+        ? this.api.crearMovimientoInventario(this.egresoForm.toPayload('EGRESO', this.usuario?.nombre))
+        : null);
+
+    if (!request$) return;
+
+    request$.subscribe({
       next: () => {
-        this.egresoForm = new MovimientoInventarioForm();
+        this.resetEgresoForm();
         this.cargarInventario();
         this.cargarMovimientos();
+        this.cargarKardex();
         this.postActionRefresh();
       },
       error: (err) => {
@@ -3075,10 +3158,37 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
 
   verFacturaDetalle(factura: any) {
     this.facturaDetalle = factura;
+    // Mostrar exactamente el mismo formato que se manda a imprimir.
+    this.facturaDetalleSrcDoc = this.generarHtmlFactura(factura);
+  }
+
+  @HostListener('document:keydown', ['$event'])
+  manejarAtajosFacturaDetalle(event: KeyboardEvent) {
+    if (!this.facturaDetalle) return;
+
+    const target = event.target as HTMLElement | null;
+    const tag = (target?.tagName || '').toLowerCase();
+    const esCampoEditable = tag === 'input' || tag === 'textarea' || tag === 'select' || !!target?.isContentEditable;
+
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      this.cerrarFacturaDetalle();
+      return;
+    }
+
+    if (event.key === 'Enter' && !esCampoEditable) {
+      event.preventDefault();
+      this.aceptarFacturaDetalle();
+    }
+  }
+
+  aceptarFacturaDetalle() {
+    this.cerrarFacturaDetalle();
   }
 
   cerrarFacturaDetalle() {
     this.facturaDetalle = null;
+    this.facturaDetalleSrcDoc = null;
   }
 
   abrirEditarFactura(factura: any) {
@@ -3224,9 +3334,13 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
 
     if (w.reysoft?.printSilent) {
       // Electron: impresión silenciosa sin diálogo
-      w.reysoft.printSilent(html).then((result: any) => {
+      const deviceName = String(this.configImpresora?.nombre_impresora || '').trim();
+      const options = deviceName ? { deviceName } : undefined;
+      w.reysoft.printSilent(html, options).then((result: any) => {
         if (result?.success) {
           this.api.marcarFacturaImpresa(factura.id).subscribe();
+        } else if (!deviceName) {
+          this.errorFacturas = 'Configura una impresora para evitar que Windows use "Guardar como PDF".';
         }
         this.imprimiendoFactura = false;
         this.cdr.detectChanges();
@@ -3266,7 +3380,7 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
     });
   }
 
-  private generarHtmlFactura(factura: any): string {
+  private generarHtmlFacturaVista(factura: any): string {
     const items = Array.isArray(factura.items) ? factura.items : [];
     const fecha = new Date(factura.fecha);
     const fechaStr = fecha.toLocaleDateString('es-EC', {
@@ -3278,78 +3392,241 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
 
     const itemsHtml = items.map((i: any) =>
       `<tr>
-        <td style="text-align:left;padding:3px 0">${i.nombre}</td>
-        <td style="text-align:center">${Number(i.cantidad || 0)}</td>
+        <td>${i.nombre || '-'}</td>
+        <td style="text-align:center">${Math.round(Number(i.cantidad || 0))}</td>
         <td style="text-align:right">$${Number(i.precio_unitario || 0).toFixed(2)}</td>
         <td style="text-align:right">$${Number(i.subtotal || 0).toFixed(2)}</td>
       </tr>`
     ).join('');
 
-    const esAnulada = factura.estado === 'ANULADA';
-    const anuladaHtml = esAnulada
-      ? `<div style="color:#dc2626;font-weight:bold;text-align:center;border:2px solid #dc2626;padding:6px;margin:8px 0;border-radius:6px">*** ANULADA ***</div>`
-      : '';
+    return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vista factura ${factura.numero}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: 'Segoe UI', Arial, Helvetica, sans-serif; background: #525659; color: #0f172a; }
+    .sheet-wrap { min-height: 100vh; display: flex; align-items: flex-start; justify-content: center; padding: 24px 18px; }
+    .sheet {
+      width: 210mm;
+      min-height: 297mm;
+      background: #fff;
+      padding: 14mm 13mm;
+      box-shadow: 0 8px 28px rgba(0,0,0,0.28);
+      border-radius: 4px;
+    }
+    .head { text-align: center; border-bottom: 2px solid #0f172a; padding-bottom: 10px; margin-bottom: 12px; }
+    .head h1 { margin: 0; font-size: 24px; }
+    .head p { margin: 3px 0; font-size: 12px; color: #334155; }
+    .meta { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 20px; font-size: 13px; margin-bottom: 12px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+    th, td { border: 1px solid #cbd5e1; padding: 7px; font-size: 12px; }
+    thead th { background: #f8fafc; }
+    .totales { margin-top: 14px; margin-left: auto; width: 270px; }
+    .totales .row { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px dashed #cbd5e1; font-size: 13px; }
+    .totales .row.total { font-size: 17px; font-weight: 700; color: #15803d; border-bottom: 0; }
+    .foot { margin-top: 24px; text-align: center; font-size: 12px; color: #64748b; }
+    @media (max-width: 980px) {
+      body { background: #f1f5f9; }
+      .sheet-wrap { padding: 0; }
+      .sheet {
+        width: 100%;
+        min-height: auto;
+        border-radius: 0;
+        box-shadow: none;
+        padding: 16px 14px;
+      }
+      .meta { grid-template-columns: 1fr; }
+      .totales { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="sheet-wrap">
+    <div class="sheet">
+      <div class="head">
+        <h1>${this.empresaInfo.nombre}</h1>
+        <p>${this.empresaInfo.lema}</p>
+        <p>RUC: ${this.empresaInfo.ruc} · ${this.empresaInfo.direccion}</p>
+        <p>Tel: ${this.empresaInfo.telefono} · ${this.empresaInfo.email}</p>
+      </div>
+
+      <div class="meta">
+        <div><strong>Documento:</strong> ${factura.tipo === 'FACTURA' ? 'Factura Electrónica' : 'Recibo de Venta'}</div>
+        <div><strong>Número:</strong> ${factura.numero || '-'}</div>
+        <div><strong>Fecha:</strong> ${fechaStr} ${horaStr}</div>
+        <div><strong>Método:</strong> ${factura.metodo_pago || '-'}</div>
+        <div><strong>Cliente:</strong> ${factura.cliente_nombre || 'Consumidor Final'}</div>
+        <div><strong>RUC/CI:</strong> ${factura.cliente_identificacion || '9999999999999'}</div>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Descripción</th>
+            <th style="width:70px">Cant.</th>
+            <th style="width:100px">P.U.</th>
+            <th style="width:110px">Subtotal</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${itemsHtml}
+        </tbody>
+      </table>
+
+      <div class="totales">
+        <div class="row"><span>Subtotal</span><strong>$${Number(factura.subtotal || 0).toFixed(2)}</strong></div>
+        <div class="row"><span>IVA (${Number(factura.impuesto_pct || 0)}%)</span><strong>$${Number(factura.impuesto_monto || 0).toFixed(2)}</strong></div>
+        <div class="row total"><span>TOTAL</span><span>$${Number(factura.total || 0).toFixed(2)}</span></div>
+      </div>
+
+      <div class="foot">Gracias por su compra</div>
+    </div>
+  </div>
+</body>
+</html>`;
+  }
+
+  private generarHtmlFactura(factura: any): string {
+    const items = Array.isArray(factura.items) ? factura.items : [];
+    const fecha = new Date(factura.fecha);
+    const fechaStr = fecha.toLocaleDateString('es-EC', {
+      year: 'numeric', month: '2-digit', day: '2-digit'
+    });
+    const horaStr = fecha.toLocaleTimeString('es-EC', {
+      hour: '2-digit', minute: '2-digit'
+    });
+
+    const ancho = 32;
+    const sep = '-'.repeat(ancho);
+    const center = (text: string = '') => {
+      const clean = String(text || '').trim();
+      if (clean.length >= ancho) return clean;
+      const left = Math.floor((ancho - clean.length) / 2);
+      return `${' '.repeat(left)}${clean}`;
+    };
+    const padRight = (text: string = '', n: number) => String(text || '').slice(0, n).padEnd(n, ' ');
+    const padLeft = (text: string = '', n: number) => String(text || '').slice(0, n).padStart(n, ' ');
+    const money = (n: any) => Number(n || 0).toFixed(2);
+    const escapeHtml = (value: any) => String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+    const itemLines: string[] = [];
+    itemLines.push(`${padRight('Desc.', 16)}${padLeft('Cant', 5)}${padLeft('P.U.', 5)}${padLeft('Total', 6)}`);
+    for (const item of items) {
+      const nombre = String(item?.nombre || '');
+      const cant = String(Number(item?.cantidad || 0));
+      const pu = money(item?.precio_unitario || 0);
+      const total = money(item?.subtotal || 0);
+      const desc = nombre.length > 16 ? `${nombre.slice(0, 15)}…` : nombre;
+      itemLines.push(`${padRight(desc, 16)}${padLeft(cant, 5)}${padLeft(pu, 5)}${padLeft(total, 6)}`);
+    }
+
+    const lines: string[] = [];
+    lines.push(center(this.empresaInfo.nombre || 'COCO & CAÑA'));
+    lines.push(center(this.empresaInfo.lema || ''));
+    lines.push(center(`RUC: ${this.empresaInfo.ruc || ''}`));
+    lines.push(center(this.empresaInfo.direccion || ''));
+    lines.push(center(`Tel: ${this.empresaInfo.telefono || ''}`));
+    lines.push(center(this.empresaInfo.email || ''));
+    lines.push(sep);
+    lines.push(center(factura.tipo === 'FACTURA' ? 'FACTURA ELECTRÓNICA' : 'RECIBO DE VENTA'));
+    lines.push(center(String(factura.numero || '-')));
+    if (factura.estado === 'ANULADA') {
+      lines.push(center('*** ANULADA ***'));
+    }
+    lines.push(sep);
+    lines.push(`Fecha: ${fechaStr} ${horaStr}`);
+    lines.push(`Cliente: ${String(factura.cliente_nombre || 'Consumidor Final')}`);
+    lines.push(`RUC/CI: ${String(factura.cliente_identificacion || '9999999999999')}`);
+    if (factura.cliente_direccion) lines.push(`Dir: ${String(factura.cliente_direccion)}`);
+    if (factura.cliente_telefono) lines.push(`Tel: ${String(factura.cliente_telefono)}`);
+    lines.push(sep);
+    lines.push(...itemLines);
+    lines.push(sep);
+    lines.push(`${padRight('Subtotal', 20)}${padLeft(money(factura.subtotal), 12)}`);
+    lines.push(`${padRight(`IVA (${Number(factura.impuesto_pct || 0)}%)`, 20)}${padLeft(money(factura.impuesto_monto), 12)}`);
+    lines.push(`${padRight('TOTAL', 20)}${padLeft(money(factura.total), 12)}`);
+    lines.push(sep);
+    lines.push(`Pago: ${String(factura.metodo_pago || '-')}`);
+    if (factura.notas) lines.push(`Notas: ${String(factura.notas)}`);
+    lines.push(sep);
+    lines.push(center('¡Gracias por su compra!'));
+    lines.push(center('Documento generado por sistema Coco & Caña'));
+    if (factura.usuario) lines.push(center(`Atendido por: ${String(factura.usuario)}`));
 
     const logoHtml = this.logoBase64
-      ? `<div class="center" style="margin-bottom:6px"><img src="${this.logoBase64}" style="width:60px;height:60px;border-radius:50%;object-fit:cover" /></div>`
+      ? `<div align="center" style="text-align:center;margin:0 0 8px 0;"><img src="${this.logoBase64}" alt="Logo" width="160" style="display:block;margin:0 auto;height:auto;max-width:160px;" /></div>`
       : '';
 
     return `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
-<title>Factura ${factura.numero}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Factura ${escapeHtml(factura.numero || '')}</title>
 <style>
-  @page { margin: 5mm; }
-  body { font-family: 'Courier New', monospace; font-size: 12px; width: 72mm; margin: 0 auto; color: #111; }
-  .center { text-align: center; }
-  .bold { font-weight: bold; }
-  .divider { border-top: 1px dashed #999; margin: 6px 0; }
-  table { width: 100%; border-collapse: collapse; }
-  th { text-align: left; border-bottom: 1px solid #333; padding: 3px 0; font-size: 11px; }
-  .total-row td { font-weight: bold; padding-top: 4px; }
+  @media print { @page { size: 80mm auto; margin: 0; } }
+  html, body { margin: 0; padding: 0; background: #fff; color: #111; }
 </style>
 </head>
-<body>
-  ${logoHtml}
-  <div class="center bold" style="font-size:16px;margin-bottom:2px">${this.empresaInfo.nombre}</div>
-  <div class="center" style="font-size:10px;margin-bottom:4px">${this.empresaInfo.lema}</div>
-  <div class="center" style="font-size:10px">RUC: ${this.empresaInfo.ruc}</div>
-  <div class="center" style="font-size:10px">${this.empresaInfo.direccion}</div>
-  <div class="center" style="font-size:10px">Tel: ${this.empresaInfo.telefono}</div>
-  <div class="center" style="font-size:10px">${this.empresaInfo.email}</div>
-  <div class="divider"></div>
-  <div class="center bold" style="font-size:13px">${factura.tipo === 'FACTURA' ? 'FACTURA ELECTRÓNICA' : 'RECIBO DE VENTA'}</div>
-  <div class="center bold" style="margin-bottom:4px">${factura.numero}</div>
-  ${anuladaHtml}
-  <div class="divider"></div>
-  <div><strong>Fecha:</strong> ${fechaStr} ${horaStr}</div>
-  <div><strong>Cliente:</strong> ${factura.cliente_nombre || 'Consumidor Final'}</div>
-  <div><strong>RUC/CI:</strong> ${factura.cliente_identificacion || '9999999999999'}</div>
-  ${factura.cliente_direccion ? `<div><strong>Dir:</strong> ${factura.cliente_direccion}</div>` : ''}
-  ${factura.cliente_telefono ? `<div><strong>Tel:</strong> ${factura.cliente_telefono}</div>` : ''}
-  <div class="divider"></div>
-  <table>
-    <thead><tr><th>Desc.</th><th style="text-align:center">Cant</th><th style="text-align:right">P.U.</th><th style="text-align:right">Total</th></tr></thead>
-    <tbody>
-      ${itemsHtml}
-    </tbody>
+<body style="font-family:'Courier New',monospace;padding:10px 0;">
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+    <tr>
+      <td align="center">
+        <table width="300" cellpadding="0" cellspacing="0" border="0" style="max-width:300px;">
+          <tr>
+            <td style="padding:8px;">
+              ${logoHtml}
+              <pre style="margin:0;font-family:'Courier New',monospace;font-size:12px;line-height:1.25;white-space:pre-wrap;word-break:break-word;">${escapeHtml(lines.join('\n'))}</pre>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
   </table>
-  <div class="divider"></div>
-  <table>
-    <tr><td>Subtotal</td><td style="text-align:right">$${Number(factura.subtotal || 0).toFixed(2)}</td></tr>
-    <tr><td>IVA (${Number(factura.impuesto_pct || 0)}%)</td><td style="text-align:right">$${Number(factura.impuesto_monto || 0).toFixed(2)}</td></tr>
-    <tr class="total-row"><td style="font-size:14px">TOTAL</td><td style="text-align:right;font-size:14px">$${Number(factura.total || 0).toFixed(2)}</td></tr>
-  </table>
-  <div class="divider"></div>
-  <div><strong>Pago:</strong> ${factura.metodo_pago || '-'}</div>
-  ${factura.notas ? `<div style="font-size:10px;margin-top:4px"><strong>Notas:</strong> ${factura.notas}</div>` : ''}
-  <div class="divider"></div>
-  <div class="center" style="font-size:10px;margin-top:6px">¡Gracias por su compra!</div>
-  <div class="center" style="font-size:9px;color:#888">Documento generado por sistema Coco & Caña</div>
-  ${factura.usuario ? `<div class="center" style="font-size:9px;color:#999;margin-top:2px">Atendido por: ${factura.usuario}</div>` : ''}
 </body>
 </html>`;
+  }
+
+  onCambioIngresoEntidad() {
+    this.resetIngresoForm();
+  }
+
+  onCambioEgresoEntidad() {
+    this.resetEgresoForm();
+  }
+
+  actualizarIngresoStockInfo() {
+    if (this.ingresoEntidad === 'producto') {
+      const producto = this.productos.find((p) => Number(p?.id) === Number(this.ingresoProductoMovForm.productoId));
+      this.ingresoStockInfo = producto
+        ? `Stock actual de ${producto.nombre}: ${Math.round(Number(producto.stock_actual || 0))} ${producto.unidad_medida || 'UND'}`
+        : null;
+      return;
+    }
+    const insumo = this.insumos.find((i) => Number(i?.id) === Number(this.ingresoForm.insumoId));
+    this.ingresoStockInfo = insumo
+      ? `Stock actual de ${insumo.nombre}: ${Math.round(Number(insumo.stock_actual || 0))} ${insumo.unidad_medida || ''}`
+      : null;
+  }
+
+  actualizarEgresoStockInfo() {
+    if (this.egresoEntidad === 'producto') {
+      const producto = this.productos.find((p) => Number(p?.id) === Number(this.egresoProductoMovForm.productoId));
+      this.egresoStockInfo = producto
+        ? `Stock actual de ${producto.nombre}: ${Math.round(Number(producto.stock_actual || 0))} ${producto.unidad_medida || 'UND'}`
+        : null;
+      return;
+    }
+    const insumo = this.insumos.find((i) => Number(i?.id) === Number(this.egresoForm.insumoId));
+    this.egresoStockInfo = insumo
+      ? `Stock actual de ${insumo.nombre}: ${Math.round(Number(insumo.stock_actual || 0))} ${insumo.unidad_medida || ''}`
+      : null;
   }
 
   // ========== SINCRONIZACIÓN ==========
@@ -3370,6 +3647,20 @@ export class DashboardComponent implements OnInit, OnDestroy, AfterViewInit {
         this.syncBackupFolder = data.folder || this.syncBackupFolder;
       },
       error: () => this.syncError = 'Error al cargar backups'
+    });
+  }
+
+  cargarSyncDiagnostico() {
+    this.syncDiagnosticoCargando = true;
+    this.api.getSyncDiagnostico().subscribe({
+      next: (data: any) => {
+        this.syncDiagnostico = data || null;
+        this.syncDiagnosticoCargando = false;
+      },
+      error: () => {
+        this.syncDiagnostico = null;
+        this.syncDiagnosticoCargando = false;
+      }
     });
   }
 

@@ -1,4 +1,4 @@
-<div class="dashboard-layout">
+﻿<div class="dashboard-layout">
     
     <aside class="sidebar">
         <div class="brand">
@@ -134,6 +134,20 @@
                     <div>
                         <span class="kpi-mini-label">Gastos del Mes</span>
                         <strong>${{ resumen.gastosMes.toFixed(2) }}</strong>
+                    </div>
+                </div>
+                <div class="kpi-mini">
+                    <i class="pi pi-calculator kpi-mini-icon text-red"></i>
+                    <div>
+                        <span class="kpi-mini-label">Costo Ventas Mes</span>
+                        <strong>${{ (analyticsExtra.balanceMes?.costo || 0) | number:'1.0-2' }}</strong>
+                    </div>
+                </div>
+                <div class="kpi-mini">
+                    <i class="pi pi-chart-line kpi-mini-icon text-green"></i>
+                    <div>
+                        <span class="kpi-mini-label">Ganancia Bruta Mes</span>
+                        <strong>${{ (analyticsExtra.balanceMes?.gananciaBruta || 0) | number:'1.0-2' }}</strong>
                     </div>
                 </div>
                 <div class="kpi-mini">
@@ -488,6 +502,7 @@
                                 <input type="number" placeholder="Stock Actual" [(ngModel)]="nuevoInsumo.stock_actual" />
                                 <input placeholder="Unidad (UND, ML, KG)" [(ngModel)]="nuevoInsumo.unidad_medida" />
                                 <input type="number" placeholder="Stock Mínimo" [(ngModel)]="nuevoInsumo.stock_minimo" />
+                                <input type="number" min="0" step="0.0001" placeholder="Costo Unitario" [(ngModel)]="nuevoInsumo.costo_unitario" />
                             </div>
                             <button class="btn-primary" (click)="crearInsumo()">Guardar Insumo</button>
                         </section>
@@ -497,9 +512,14 @@
                             <div class="form-grid">
                                 <input placeholder="Nombre" [(ngModel)]="nuevoProducto.nombre" />
                                 <input type="number" placeholder="Precio" [(ngModel)]="nuevoProducto.precio" />
+                                <input type="number" min="0" step="0.0001" placeholder="Costo Producción" [(ngModel)]="nuevoProducto.costo_produccion" />
                                 <input type="number" placeholder="Stock Actual" [(ngModel)]="nuevoProducto.stock_actual" />
                                 <input placeholder="Unidad (UND, ML, KG)" [(ngModel)]="nuevoProducto.unidad_medida" />
                                 <input type="number" placeholder="Stock Mínimo" [(ngModel)]="nuevoProducto.stock_minimo" />
+                                <select [(ngModel)]="nuevoProducto.insumo_equivalente_id">
+                                    <option value="">Insumo equivalente (opcional)</option>
+                                    <option *ngFor="let ins of insumos" [value]="ins.id">{{ ins.nombre }}</option>
+                                </select>
                                 <select [(ngModel)]="nuevoProducto.id_categoria">
                                     <option value="">Sin categoría</option>
                                     <option *ngFor="let cat of categorias" [value]="cat.id">{{ cat.nombre }}</option>
@@ -523,6 +543,7 @@
                                     <h5>{{ insumo.nombre }}</h5>
                                     <p class="muted">Stock: {{ insumo.stock_actual | number:'1.0-3' }} {{ insumo.unidad_medida }}</p>
                                     <p class="muted">Mínimo: {{ insumo.stock_minimo | number:'1.0-3' }}</p>
+<p class="text-green" *ngIf="insumo.costo_unitario">Costo Unit.: ${{ insumo.costo_unitario | number:'1.1-2' }}</p>
                                 </div>
                             </div>
                         </div>
@@ -540,38 +561,98 @@
                                     <h5>{{ prod.nombre }}</h5>
                                     <p class="muted">${{ prod.precio | number:'1.0-2' }} · {{ prod.categoria_nombre || 'Sin categoría' }}</p>
                                     <p class="muted" *ngIf="!esSmoothieProducto(prod)">Stock: {{ prod.stock_actual | number:'1.0-3' }} {{ prod.unidad_medida || 'UND' }}</p>
+<p class="text-green" *ngIf="prod.costo_produccion">Costo Prod.: ${{ prod.costo_produccion | number:'1.1-2' }}</p>
                                 </div>
                             </div>
                         </div>
                     </section>
                 </div>
 
-                <section class="panel" *ngIf="inventarioVista === 'ingreso'">
-                    <h4>Ingreso de Inventario</h4>
-                    <div class="form-grid">
-                        <select [(ngModel)]="ingresoForm.insumoId">
+                <datalist id="invMotivos">
+                    <option *ngFor="let v of invSugMotivos" [value]="v"></option>
+                </datalist>
+                <datalist id="invReferencias">
+                    <option *ngFor="let v of invSugReferencias" [value]="v"></option>
+                </datalist>
+
+                <section class="panel inv-mov-panel" *ngIf="inventarioVista === 'ingreso'">
+                    <div class="inv-mov-header">
+                        <h4>Ingreso de Inventario</h4>
+                    </div>
+
+                    <div class="inv-mov-sub" *ngIf="ingresoStockInfo">{{ ingresoStockInfo }}</div>
+
+                    <div class="form-grid inv-mov-grid">
+                        <select [(ngModel)]="ingresoEntidad" (ngModelChange)="onCambioIngresoEntidad()">
+                            <option value="insumo">Insumo</option>
+                            <option value="producto">Producto</option>
+                        </select>
+
+                        <select *ngIf="ingresoEntidad === 'insumo'" [(ngModel)]="ingresoForm.insumoId" (ngModelChange)="actualizarIngresoStockInfo()">
                             <option [ngValue]="null">Selecciona un insumo</option>
                             <option *ngFor="let insumo of insumos" [ngValue]="insumo.id">{{ insumo.nombre }} ({{ insumo.unidad_medida }})</option>
                         </select>
-                        <input type="number" placeholder="Cantidad" [(ngModel)]="ingresoForm.cantidad" />
-                        <input placeholder="Motivo" [(ngModel)]="ingresoForm.motivo" />
-                        <input placeholder="Referencia" [(ngModel)]="ingresoForm.referencia" />
+
+                        <select *ngIf="ingresoEntidad === 'producto'" [(ngModel)]="ingresoProductoMovForm.productoId" (ngModelChange)="actualizarIngresoStockInfo()">
+                            <option [ngValue]="null">Selecciona un producto</option>
+                            <option *ngFor="let prod of productos" [ngValue]="prod.id">{{ prod.nombre }} ({{ prod.unidad_medida || 'UND' }})</option>
+                        </select>
+
+                        <input *ngIf="ingresoEntidad === 'insumo'" type="number" placeholder="Cantidad" [(ngModel)]="ingresoForm.cantidad" />
+                        <input *ngIf="ingresoEntidad === 'producto'" type="number" placeholder="Cantidad" [(ngModel)]="ingresoProductoMovForm.cantidad" />
+
+                        <input *ngIf="ingresoEntidad === 'insumo'" list="invMotivos" placeholder="Descripción / motivo" [(ngModel)]="ingresoForm.motivo" />
+                        <input *ngIf="ingresoEntidad === 'producto'" list="invMotivos" placeholder="Descripción / motivo" [(ngModel)]="ingresoProductoMovForm.motivo" />
+
+                        <input *ngIf="ingresoEntidad === 'insumo'" list="invReferencias" placeholder="Referencia" [(ngModel)]="ingresoForm.referencia" />
+                        <input *ngIf="ingresoEntidad === 'producto'" list="invReferencias" placeholder="Referencia" [(ngModel)]="ingresoProductoMovForm.referencia" />
                     </div>
-                    <button type="button" class="btn-primary" (click)="registrarIngreso()">Registrar Ingreso</button>
+
+                    <div class="btn-row">
+                        <button type="button" class="btn-secondary" (click)="resetIngresoForm()">Limpiar</button>
+                        <button type="button" class="btn-primary" (click)="registrarIngreso()">Registrar ingreso</button>
+                    </div>
+                    <p class="inv-hint muted">Tip: usa Enter para guardar y Esc para cancelar modales.</p>
                 </section>
 
-                <section class="panel" *ngIf="inventarioVista === 'egreso'">
-                    <h4>Egreso de Inventario</h4>
-                    <div class="form-grid">
-                        <select [(ngModel)]="egresoForm.insumoId">
+                <section class="panel inv-mov-panel" *ngIf="inventarioVista === 'egreso'">
+                    <div class="inv-mov-header">
+                        <h4>Egreso de Inventario</h4>
+                    </div>
+
+                    <div class="inv-mov-sub" *ngIf="egresoStockInfo">{{ egresoStockInfo }}</div>
+
+                    <div class="form-grid inv-mov-grid">
+                        <select [(ngModel)]="egresoEntidad" (ngModelChange)="onCambioEgresoEntidad()">
+                            <option value="insumo">Insumo</option>
+                            <option value="producto">Producto</option>
+                        </select>
+
+                        <select *ngIf="egresoEntidad === 'insumo'" [(ngModel)]="egresoForm.insumoId" (ngModelChange)="actualizarEgresoStockInfo()">
                             <option [ngValue]="null">Selecciona un insumo</option>
                             <option *ngFor="let insumo of insumos" [ngValue]="insumo.id">{{ insumo.nombre }} ({{ insumo.unidad_medida }})</option>
                         </select>
-                        <input type="number" placeholder="Cantidad" [(ngModel)]="egresoForm.cantidad" />
-                        <input placeholder="Motivo" [(ngModel)]="egresoForm.motivo" />
-                        <input placeholder="Referencia" [(ngModel)]="egresoForm.referencia" />
+
+                        <select *ngIf="egresoEntidad === 'producto'" [(ngModel)]="egresoProductoMovForm.productoId" (ngModelChange)="actualizarEgresoStockInfo()">
+                            <option [ngValue]="null">Selecciona un producto</option>
+                            <option *ngFor="let prod of productos" [ngValue]="prod.id">{{ prod.nombre }} ({{ prod.unidad_medida || 'UND' }})</option>
+                        </select>
+
+                        <input *ngIf="egresoEntidad === 'insumo'" type="number" placeholder="Cantidad" [(ngModel)]="egresoForm.cantidad" />
+                        <input *ngIf="egresoEntidad === 'producto'" type="number" placeholder="Cantidad" [(ngModel)]="egresoProductoMovForm.cantidad" />
+
+                        <input *ngIf="egresoEntidad === 'insumo'" list="invMotivos" placeholder="Descripción / motivo" [(ngModel)]="egresoForm.motivo" />
+                        <input *ngIf="egresoEntidad === 'producto'" list="invMotivos" placeholder="Descripción / motivo" [(ngModel)]="egresoProductoMovForm.motivo" />
+
+                        <input *ngIf="egresoEntidad === 'insumo'" list="invReferencias" placeholder="Referencia" [(ngModel)]="egresoForm.referencia" />
+                        <input *ngIf="egresoEntidad === 'producto'" list="invReferencias" placeholder="Referencia" [(ngModel)]="egresoProductoMovForm.referencia" />
                     </div>
-                    <button type="button" class="btn-primary" (click)="registrarEgreso()">Registrar Egreso</button>
+
+                    <div class="btn-row">
+                        <button type="button" class="btn-secondary" (click)="resetEgresoForm()">Limpiar</button>
+                        <button type="button" class="btn-primary" (click)="registrarEgreso()">Registrar egreso</button>
+                    </div>
+                    <p class="inv-hint muted">Tip: Enter guarda · Esc cancela.</p>
                 </section>
 
                 <section class="panel" *ngIf="inventarioVista === 'produccion'">
@@ -755,10 +836,12 @@
                 <h4>Editar Insumo</h4>
                 <div class="form-grid">
                     <input placeholder="Nombre" [(ngModel)]="editandoInsumo.nombre" />
-                    <input type="number" placeholder="Stock Actual" [(ngModel)]="editandoInsumo.stock_actual" />
+                    <input type="number" placeholder="Stock Actual" [(ngModel)]="editandoInsumo.stock_actual" disabled title="El stock se ajusta desde Ingreso/Egreso" />
                     <input placeholder="Unidad" [(ngModel)]="editandoInsumo.unidad_medida" />
                     <input type="number" placeholder="Stock Mínimo" [(ngModel)]="editandoInsumo.stock_minimo" />
+                    <input type="number" min="0" step="0.0001" placeholder="Costo Unitario" [(ngModel)]="editandoInsumo.costo_unitario" />
                 </div>
+                <p class="muted" style="margin: 0 0 8px 0;">El stock no se edita aquí: usa <strong>Ingreso</strong> / <strong>Egreso</strong> para sumar o restar.</p>
                 <div class="modal-actions">
                     <button class="btn-secondary" (click)="cancelarEditarInsumo()">Cancelar</button>
                     <button class="btn-danger" *ngIf="editandoInsumo?.id" (click)="eliminarInsumo(editandoInsumo.id)">Eliminar</button>
@@ -774,9 +857,14 @@
                 <div class="form-grid">
                     <input placeholder="Nombre" [(ngModel)]="editandoProducto.nombre" />
                     <input type="number" placeholder="Precio" [(ngModel)]="editandoProducto.precio" />
-                    <input type="number" placeholder="Stock Actual" [(ngModel)]="editandoProducto.stock_actual" />
+                    <input type="number" min="0" step="0.0001" placeholder="Costo Producción" [(ngModel)]="editandoProducto.costo_produccion" />
+                    <input type="number" placeholder="Stock Actual" [(ngModel)]="editandoProducto.stock_actual" disabled title="El stock se ajusta desde Ingreso/Egreso" />
                     <input placeholder="Unidad (UND, ML, KG)" [(ngModel)]="editandoProducto.unidad_medida" />
                     <input type="number" placeholder="Stock Mínimo" [(ngModel)]="editandoProducto.stock_minimo" />
+                    <select [(ngModel)]="editandoProducto.insumo_equivalente_id">
+                        <option value="">Insumo equivalente (opcional)</option>
+                        <option *ngFor="let ins of insumos" [value]="ins.id">{{ ins.nombre }}</option>
+                    </select>
                     <select [(ngModel)]="editandoProducto.id_categoria">
                         <option value="">Sin categoría</option>
                         <option *ngFor="let cat of categorias" [value]="cat.id">{{ cat.nombre }}</option>
@@ -787,6 +875,7 @@
                         Es preparado
                     </label>
                 </div>
+                <p class="muted" style="margin: 0 0 8px 0;">El stock no se edita aquí: usa <strong>Ingreso</strong> / <strong>Egreso</strong> para sumar o restar.</p>
                 <div class="modal-actions">
                     <button class="btn-secondary" (click)="cancelarEditarProducto()">Cancelar</button>
                     <button class="btn-danger" *ngIf="editandoProducto?.id" (click)="eliminarProducto(editandoProducto.id)">Eliminar</button>
@@ -810,7 +899,7 @@
                     <div class="form-grid">
                         <input type="number" placeholder="Saldo inicial" [(ngModel)]="cajaSaldoInicial" />
                     </div>
-                    <button class="btn-primary" (click)="abrirCaja()">Abrir caja</button>
+                    <button class="btn-primary" (click)="abrirCaja()" [disabled]="cajaAccionCargando">Abrir caja</button>
                 </div>
 
                 <div *ngIf="cajaEstado">
@@ -826,7 +915,7 @@
                         <input type="number" placeholder="Editar saldo inicial" [(ngModel)]="cajaSaldoInicialEdit" />
                     </div>
                     <div class="btn-row">
-                        <button type="button" class="btn-secondary" (click)="actualizarSaldoInicialCaja()">Actualizar saldo inicial</button>
+                        <button type="button" class="btn-secondary" (click)="actualizarSaldoInicialCaja()" [disabled]="cajaAccionCargando">Actualizar saldo inicial</button>
                     </div>
                     <div class="caja-resumen">
                         <div class="caja-kpi">
@@ -867,7 +956,7 @@
                     </div>
                     <div class="btn-row">
                         <button class="btn-secondary" (click)="descargarCajaExcel()">📊 Exportar cierre</button>
-                        <button class="btn-primary" (click)="cerrarCaja()">Cerrar caja</button>
+                        <button class="btn-primary" (click)="cerrarCaja()" [disabled]="cajaAccionCargando">Cerrar caja</button>
                     </div>
                 </div>
             </div>
@@ -992,6 +1081,7 @@
                                 <th>Tipo</th>
                                 <th>Canal</th>
                                 <th>Metodo</th>
+                                <th>Cliente</th>
                                 <th>Crédito</th>
                                 <th>Total</th>
                                 <th>Acciones</th>
@@ -1003,6 +1093,11 @@
                                 <td>{{ venta.tipo }}</td>
                                 <td>{{ venta.canal }}</td>
                                 <td>{{ venta.metodo_pago || '-' }}</td>
+                                <td>
+                                    <span *ngIf="venta.cliente_id">{{ venta.cliente_nombre || ('Cliente #' + venta.cliente_id) }}</span>
+                                    <span class="badge badge-warning" *ngIf="!venta.cliente_id && venta.metodo_pago === 'CREDITO'">SIN CLIENTE</span>
+                                    <span class="muted" *ngIf="!venta.cliente_id && venta.metodo_pago !== 'CREDITO'">-</span>
+                                </td>
                                 <td>
                                     <span class="badge badge-success" *ngIf="venta.metodo_pago === 'CREDITO' && venta.credito_pagado">Pagado</span>
                                     <span class="badge badge-warning" *ngIf="venta.metodo_pago === 'CREDITO' && !venta.credito_pagado">Pendiente</span>
@@ -1019,7 +1114,7 @@
                                 </td>
                             </tr>
                             <tr *ngIf="!ventasEdicion.length">
-                                <td colspan="7" class="muted center">Sin resultados</td>
+                                <td colspan="8" class="muted center">Sin resultados</td>
                             </tr>
                         </tbody>
                     </table>
@@ -1095,7 +1190,11 @@
                         <strong>${{ resumen.gananciasBaseMes | number:'1.0-2' }}</strong>
                     </div>
                     <div class="caja-kpi">
-                        <span>Gastos facturados del mes</span>
+                        <span>Costo de Ventas (Mes)</span>
+                          <strong>${{ resumen.totalCostoVentas | number:'1.0-2' }}</strong>
+                      </div>
+                      <div class="caja-kpi">
+                          <span>Gastos facturados del mes</span>
                         <strong>${{ resumen.gastosFacturasMes | number:'1.0-2' }}</strong>
                     </div>
                     <div class="caja-kpi destacado">
@@ -1485,6 +1584,7 @@
                             <input type="number" placeholder="Stock Actual" [(ngModel)]="bodegaNuevoInsumo.stock_actual" />
                             <input placeholder="Unidad (UND, ML, KG)" [(ngModel)]="bodegaNuevoInsumo.unidad_medida" />
                             <input type="number" placeholder="Stock Mínimo" [(ngModel)]="bodegaNuevoInsumo.stock_minimo" />
+                            <input type="number" min="0" step="0.0001" placeholder="Costo Unitario" [(ngModel)]="bodegaNuevoInsumo.costo_unitario" />
                         </div>
                         <button class="btn-primary" (click)="crearBodegaInsumo()">Guardar Insumo</button>
                     </section>
@@ -1494,6 +1594,11 @@
                         <div class="form-grid">
                             <input placeholder="Nombre" [(ngModel)]="bodegaNuevoProducto.nombre" />
                             <input type="number" placeholder="Precio" [(ngModel)]="bodegaNuevoProducto.precio" />
+                            <input type="number" min="0" step="0.0001" placeholder="Costo Producción" [(ngModel)]="bodegaNuevoProducto.costo_produccion" />
+                            <select [(ngModel)]="bodegaNuevoProducto.insumo_equivalente_id">
+                                <option value="">Insumo equivalente (opcional)</option>
+                                <option *ngFor="let ins of bodegaInsumos" [value]="ins.id">{{ ins.nombre }}</option>
+                            </select>
                             <label class="check-row">
                                 <input type="checkbox" [(ngModel)]="bodegaNuevoProducto.es_preparado" />
                                 Es preparado
@@ -1668,12 +1773,12 @@
 
                 <textarea class="input-notas" rows="2" placeholder="Notas / Referencia" [(ngModel)]="pagoNotas"></textarea>
 
-                <label class="toggle-print-row">
-                    <span class="toggle-switch" [class.active]="pagoImprimirRecibo" (click)="pagoImprimirRecibo = !pagoImprimirRecibo">
-                        <span class="toggle-slider"></span>
-                    </span>
-                    <span class="toggle-label"><i class="pi pi-print"></i> Imprimir recibo al cobrar</span>
-                </label>
+                <div class="pago-opciones-finales">
+                    <label class="check-row">
+                        <input type="checkbox" [(ngModel)]="pagoImprimirRecibo" />
+                        Imprimir automáticamente al confirmar pago
+                    </label>
+                </div>
 
                 <div class="error-box" *ngIf="errorPago">{{ errorPago }}</div>
 
@@ -1719,10 +1824,21 @@
         </div>
 
         <div class="modal-backdrop" *ngIf="cobroCreditoAbierto">
-            <div class="modal modal-lg">
+            <div class="modal modal-xl credito-modal">
                 <div class="panel-header">
                     <h4>Cobrar crédito</h4>
                     <button class="btn-secondary" (click)="cerrarCobroCredito()">Cerrar</button>
+                </div>
+                <div class="credito-cliente-info">
+                    <div>
+                        <span class="muted">Cliente</span>
+                        <strong>{{ cobroCreditoVenta?.cliente_nombre || (cobroCreditoVenta?.cliente_id ? ('Cliente #' + cobroCreditoVenta?.cliente_id) : 'SIN CLIENTE') }}</strong>
+                        <span class="muted" *ngIf="cobroCreditoVenta?.cliente_identificacion">({{ cobroCreditoVenta?.cliente_identificacion }})</span>
+                    </div>
+                    <div class="credito-venta-info">
+                        <span class="muted">Venta</span>
+                        <strong>#{{ cobroCreditoVenta?.id }}</strong>
+                    </div>
                 </div>
                 <div class="pago-total">
                     <span>Total a cobrar</span>
@@ -1762,11 +1878,15 @@
         </div>
 
         <div class="modal-backdrop" *ngIf="editandoVenta">
-            <div class="modal modal-lg">
+            <div class="modal modal-xl edit-venta-modal">
                 <h4>Editar venta</h4>
                 <div class="form-grid">
                     <select [(ngModel)]="editandoVenta.metodo_pago">
                         <option *ngFor="let metodo of metodosPagoPrincipales" [value]="metodo.value">{{ metodo.label }}</option>
+                    </select>
+                    <select *ngIf="editandoVenta.metodo_pago === 'CREDITO'" [(ngModel)]="editandoVenta.cliente_id">
+                        <option [ngValue]="null">Selecciona un cliente</option>
+                        <option *ngFor="let c of clientes" [ngValue]="c.id">{{ c.nombre }} {{ c.identificacion ? '(' + c.identificacion + ')' : '' }}</option>
                     </select>
                     <input placeholder="Notas" [(ngModel)]="editandoVenta.notas" />
                     <input type="number" placeholder="Impuesto % (futuro)" [(ngModel)]="editandoVenta.impuesto_pct" />
@@ -2019,48 +2139,22 @@
         </div>
 
         <!-- MODAL: Detalle Factura -->
-        <div class="modal-backdrop" *ngIf="facturaDetalle">
-            <div class="modal modal-lg">
+        <div class="modal-backdrop" *ngIf="facturaDetalle" (click)="cerrarFacturaDetalle()">
+            <div class="modal modal-lg factura-viewer-modal" (click)="$event.stopPropagation()">
                 <div class="panel-header">
                     <h4><i class="pi pi-file-edit"></i> Factura {{ facturaDetalle.numero }}</h4>
-                    <button class="btn-secondary" (click)="cerrarFacturaDetalle()">Cerrar</button>
+                    <button class="btn-secondary" (click)="cerrarFacturaDetalle()">Cerrar (Esc)</button>
                 </div>
                 <div *ngIf="facturaDetalle.estado === 'ANULADA'" class="anulada-banner">
                     <i class="pi pi-ban"></i> ANULADA — {{ facturaDetalle.anulacion_motivo }}
                 </div>
-                <div class="factura-info-grid">
-                    <div><strong>Fecha:</strong> {{ facturaDetalle.fecha | date:'dd/MM/yyyy HH:mm' }}</div>
-                    <div><strong>Tipo:</strong> {{ facturaDetalle.tipo }}</div>
-                    <div><strong>Método pago:</strong> {{ facturaDetalle.metodo_pago || '-' }}</div>
-                    <div><strong>Cliente:</strong> {{ facturaDetalle.cliente_nombre || 'Consumidor Final' }}</div>
-                    <div><strong>RUC/CI:</strong> {{ facturaDetalle.cliente_identificacion || '9999999999999' }}</div>
-                    <div><strong>Dirección:</strong> {{ facturaDetalle.cliente_direccion || '-' }}</div>
-                    <div><strong>Teléfono:</strong> {{ facturaDetalle.cliente_telefono || '-' }}</div>
-                    <div><strong>Email:</strong> {{ facturaDetalle.cliente_email || '-' }}</div>
-                </div>
-                <div class="table-wrapper" *ngIf="facturaDetalle.items?.length">
-                    <table class="data-table">
-                        <thead>
-                            <tr><th>Producto</th><th>Cant.</th><th>P.U.</th><th>Subtotal</th></tr>
-                        </thead>
-                        <tbody>
-                            <tr *ngFor="let item of facturaDetalle.items">
-                                <td>{{ item.nombre }}</td>
-                                <td>{{ item.cantidad }}</td>
-                                <td>${{ item.precio_unitario | number:'1.2-2' }}</td>
-                                <td>${{ item.subtotal | number:'1.2-2' }}</td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-                <div class="factura-totales">
-                    <div>Subtotal: <strong>${{ facturaDetalle.subtotal | number:'1.2-2' }}</strong></div>
-                    <div>IVA ({{ facturaDetalle.impuesto_pct }}%): <strong>${{ facturaDetalle.impuesto_monto | number:'1.2-2' }}</strong></div>
-                    <div class="factura-total-line">TOTAL: <strong>${{ facturaDetalle.total | number:'1.2-2' }}</strong></div>
+
+                <div class="factura-preview-shell" *ngIf="facturaDetalleSrcDoc">
+                    <iframe class="factura-preview-frame" title="Vista de factura" [attr.srcdoc]="facturaDetalleSrcDoc"></iframe>
                 </div>
                 <div class="modal-actions">
                     <button class="btn-secondary" (click)="imprimirFactura(facturaDetalle)"><i class="pi pi-print"></i> Imprimir</button>
-                    <button class="btn-primary" (click)="abrirEditarFactura(facturaDetalle)" *ngIf="facturaDetalle.estado !== 'ANULADA'"><i class="pi pi-pencil"></i> Editar</button>
+                    <button class="btn-primary" (click)="aceptarFacturaDetalle()">Aceptar (Enter)</button>
                 </div>
             </div>
         </div>
@@ -2173,6 +2267,10 @@
                 <div class="error-box" *ngIf="errorConfigImpresora">{{ errorConfigImpresora }}</div>
                 <div class="modal-actions">
                     <button class="btn-secondary" (click)="cerrarConfigImpresora()">Cancelar</button>
+                    <button class="btn-secondary" (click)="probarImpresion()" [disabled]="probandoImpresion">
+                        <i class="pi" [ngClass]="probandoImpresion ? 'pi-spin pi-spinner' : 'pi-print'"></i>
+                        {{ probandoImpresion ? 'Probando...' : 'Probar impresión' }}
+                    </button>
                     <button class="btn-primary" (click)="guardarConfigImpresora()"><i class="pi pi-save"></i> Guardar Configuración</button>
                 </div>
             </div>
@@ -2263,6 +2361,63 @@
                             <strong>¿Cómo funciona?</strong>
                             <p>Al cerrar la app se crea un backup automático en tu carpeta de OneDrive. Esta carpeta se sincroniza con la nube. En tu otra laptop, puedes restaurar desde esa misma carpeta.</p>
                         </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Panel: Diagnóstico -->
+            <div class="sync-panel sync-panel-list sync-diag-panel">
+                <div class="sync-panel-header">
+                    <i class="pi pi-shield" style="color:#0ea5e9;font-size:1.4rem"></i>
+                    <h4>Diagnóstico de Restauración</h4>
+                    <button class="btn-sync-small" (click)="cargarSyncDiagnostico()" [disabled]="syncDiagnosticoCargando" style="margin-left:auto">
+                        <i class="pi pi-refresh"></i> {{ syncDiagnosticoCargando ? 'Revisando...' : 'Revisar' }}
+                    </button>
+                </div>
+
+                <div class="sync-empty" *ngIf="!syncDiagnostico && !syncDiagnosticoCargando">
+                    <i class="pi pi-search" style="font-size:2rem;color:#94a3b8"></i>
+                    <p>Ejecuta el diagnóstico para validar restauración entre laptops.</p>
+                </div>
+
+                <div class="sync-diag-grid" *ngIf="syncDiagnostico">
+                    <div class="sync-status-row">
+                        <span class="sync-label">Estado general:</span>
+                        <span [class]="syncDiagnostico.aptoRestauracionEntreLaptops ? 'sync-badge sync-badge-ok' : 'sync-badge sync-badge-warn'">
+                            {{ syncDiagnostico.aptoRestauracionEntreLaptops ? 'Apto para restaurar' : 'Requiere correcciones' }}
+                        </span>
+                    </div>
+                    <div class="sync-status-row">
+                        <span class="sync-label">Base actual:</span>
+                        <span class="sync-value">{{ syncDiagnostico.db?.actual || '-' }}</span>
+                    </div>
+                    <div class="sync-status-row">
+                        <span class="sync-label">Backups disponibles:</span>
+                        <span class="sync-value">{{ syncDiagnostico.sync?.totalBackups || 0 }}</span>
+                    </div>
+                    <div class="sync-status-row">
+                        <span class="sync-label">Ventas mes actual:</span>
+                        <span class="sync-value">${{ syncDiagnostico.mesActual?.ventas || 0 | number:'1.2-2' }}</span>
+                    </div>
+                    <div class="sync-status-row">
+                        <span class="sync-label">Gastos mes actual:</span>
+                        <span class="sync-value">${{ syncDiagnostico.mesActual?.gastos || 0 | number:'1.2-2' }}</span>
+                    </div>
+                </div>
+
+                <div class="sync-diag-checks" *ngIf="syncDiagnostico?.checks">
+                    <span [class]="syncDiagnostico.checks.psqlOk ? 'sync-badge sync-badge-ok' : 'sync-badge sync-badge-warn'">psql</span>
+                    <span [class]="syncDiagnostico.checks.pgDumpOk ? 'sync-badge sync-badge-ok' : 'sync-badge sync-badge-warn'">pg_dump</span>
+                    <span [class]="syncDiagnostico.checks.folderExists ? 'sync-badge sync-badge-ok' : 'sync-badge sync-badge-warn'">Carpeta</span>
+                    <span [class]="syncDiagnostico.checks.folderWritable ? 'sync-badge sync-badge-ok' : 'sync-badge sync-badge-warn'">Permisos</span>
+                    <span [class]="syncDiagnostico.checks.schemaOk ? 'sync-badge sync-badge-ok' : 'sync-badge sync-badge-warn'">Esquema BD</span>
+                </div>
+
+                <div class="sync-info-box" *ngIf="syncDiagnostico?.warnings?.length">
+                    <i class="pi pi-exclamation-triangle"></i>
+                    <div>
+                        <strong>Alertas detectadas</strong>
+                        <p *ngFor="let w of syncDiagnostico.warnings">• {{ w }}</p>
                     </div>
                 </div>
             </div>

@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const cors = require('cors'); // <--- IMPORTANTE
 const pool = require('./db');
 const jwt = require('jsonwebtoken');
@@ -26,7 +26,7 @@ app.use((req, res, next) => {
     if (!isDbRestoreInProgress) return next();
     if (!req.path.startsWith('/api/')) return next();
     // Permitimos que el frontend consulte config/listado mientras restaura
-    if (req.path.startsWith('/api/sync/config') || req.path.startsWith('/api/sync/backups')) return next();
+    if (req.path.startsWith('/api/sync/config') || req.path.startsWith('/api/sync/backups') || req.path.startsWith('/api/sync/diagnostico')) return next();
     return res.status(503).json({ error: 'Restauración de base de datos en curso. Intenta nuevamente en unos segundos.' });
 });
 
@@ -129,6 +129,22 @@ async function initDb() {
     `);
     await pool.query('CREATE INDEX IF NOT EXISTS idx_mov_inv_insumo ON movimientos_inventario(insumo_id)');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_mov_inv_fecha ON movimientos_inventario(fecha)');
+
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS movimientos_productos_inventario (
+            id SERIAL PRIMARY KEY,
+            producto_id INTEGER NOT NULL REFERENCES productos(id) ON DELETE CASCADE,
+            tipo VARCHAR(30) NOT NULL,
+            cantidad NUMERIC(12,3) NOT NULL,
+            unidad_medida TEXT NOT NULL,
+            motivo TEXT,
+            referencia TEXT,
+            usuario TEXT,
+            fecha TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+    `);
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_mov_prod_inv_producto ON movimientos_productos_inventario(producto_id)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_mov_prod_inv_fecha ON movimientos_productos_inventario(fecha)');
 
     // Clientes
     await pool.query(`
@@ -2130,7 +2146,7 @@ app.get('/api/gastos', async (req, res) => {
         values.push(String(desde));
     }
     if (hasta) {
-        filters.push(`g.fecha <= $${idx++}`);
+        filters.push(`g.fecha < (DATE($${idx++}) + INTERVAL '1 day')`);
         values.push(String(hasta));
     }
     if (caja_origen) {
@@ -2440,6 +2456,64 @@ app.post('/api/inventario/movimientos', async (req, res) => {
         await client.query('ROLLBACK');
         console.error(err);
         res.status(500).json({ error: 'Error al registrar movimiento' });
+    } finally {
+        client.release();
+    }
+});
+
+app.post('/api/inventario/movimientos-producto', async (req, res) => {
+    const { producto_id, tipo, cantidad, motivo, referencia, usuario } = req.body;
+    if (!producto_id || !tipo || cantidad === undefined || cantidad === null) {
+        return res.status(400).json({ error: 'Producto, tipo y cantidad son obligatorios' });
+    }
+    const cantidadValue = Number(cantidad);
+    if (Number.isNaN(cantidadValue) || cantidadValue <= 0) {
+        return res.status(400).json({ error: 'Cantidad inválida' });
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const productoRes = await client.query('SELECT * FROM productos WHERE id = $1', [producto_id]);
+        if (productoRes.rowCount === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ error: 'Producto no encontrado' });
+        }
+
+        const producto = productoRes.rows[0];
+        const tipoUpper = String(tipo).toUpperCase();
+        if (!['INGRESO', 'EGRESO'].includes(tipoUpper)) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: 'Tipo inválido para productos' });
+        }
+
+        const delta = tipoUpper === 'EGRESO' ? -cantidadValue : cantidadValue;
+        const nuevoStock = Number(producto.stock_actual ?? 0) + delta;
+        if (nuevoStock < 0) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: 'Stock insuficiente' });
+        }
+
+        await client.query('UPDATE productos SET stock_actual = $1 WHERE id = $2', [nuevoStock, producto_id]);
+        const movRes = await client.query(
+            `INSERT INTO movimientos_productos_inventario (producto_id, tipo, cantidad, unidad_medida, motivo, referencia, usuario)
+             VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+            [
+                producto_id,
+                tipoUpper,
+                cantidadValue,
+                producto.unidad_medida || 'UND',
+                motivo || null,
+                referencia || null,
+                usuario || null
+            ]
+        );
+        await client.query('COMMIT');
+        res.json(movRes.rows[0]);
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error(err);
+        res.status(500).json({ error: 'Error al registrar movimiento de producto' });
     } finally {
         client.release();
     }
@@ -2767,6 +2841,47 @@ app.get('/api/inventario/movimientos', async (req, res) => {
     }
 });
 
+app.get('/api/inventario/movimientos-producto', async (req, res) => {
+    const { productoId, tipo, desde, hasta } = req.query;
+    const filters = [];
+    const values = [];
+    let idx = 1;
+
+    if (productoId) {
+        filters.push(`m.producto_id = $${idx++}`);
+        values.push(Number(productoId));
+    }
+    if (tipo) {
+        filters.push(`m.tipo = $${idx++}`);
+        values.push(String(tipo).toUpperCase());
+    }
+    if (desde) {
+        filters.push(`m.fecha >= $${idx++}`);
+        values.push(String(desde));
+    }
+    if (hasta) {
+        filters.push(`m.fecha <= $${idx++}`);
+        values.push(String(hasta));
+    }
+
+    const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+
+    try {
+        const result = await pool.query(
+            `SELECT m.*, p.nombre AS producto_nombre
+             FROM movimientos_productos_inventario m
+             JOIN productos p ON p.id = m.producto_id
+             ${where}
+             ORDER BY m.fecha DESC, m.id DESC`,
+            values
+        );
+        res.json(result.rows);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Error al listar movimientos de productos' });
+    }
+});
+
 app.get('/api/inventario/kardex', async (req, res) => {
     const { insumoId, desde, hasta } = req.query;
     const filters = [];
@@ -2809,7 +2924,7 @@ app.get('/api/inventario/kardex', async (req, res) => {
     }
 });
 
-// Kardex de productos (ventas)
+// Kardex de productos (movimientos de inventario)
 app.get('/api/productos/kardex', async (req, res) => {
     const { productoId, desde, hasta } = req.query;
     const filters = [];
@@ -2817,15 +2932,15 @@ app.get('/api/productos/kardex', async (req, res) => {
     let idx = 1;
 
     if (productoId) {
-        filters.push(`vi.producto_id = $${idx++}`);
+        filters.push(`k.producto_id = $${idx++}`);
         values.push(Number(productoId));
     }
     if (desde) {
-        filters.push(`v.fecha >= $${idx++}`);
+        filters.push(`k.fecha >= $${idx++}`);
         values.push(String(desde));
     }
     if (hasta) {
-        filters.push(`v.fecha <= $${idx++}`);
+        filters.push(`k.fecha <= $${idx++}`);
         values.push(String(hasta));
     }
 
@@ -2833,18 +2948,34 @@ app.get('/api/productos/kardex', async (req, res) => {
 
     try {
         const result = await pool.query(
-            `SELECT v.fecha, vi.producto_id, p.nombre AS producto_nombre,
-                'VENTA' AS tipo,
-                vi.cantidad,
-                'UND' AS unidad_medida,
-                v.usuario,
-                CONCAT('VENTA:', v.id) AS referencia,
-                SUM(vi.cantidad) OVER (PARTITION BY vi.producto_id ORDER BY v.fecha ASC, vi.id ASC) AS saldo
-             FROM ventas_items vi
-             JOIN ventas v ON v.id = vi.venta_id
-             LEFT JOIN productos p ON p.id = vi.producto_id
-             ${where}
-             ORDER BY v.fecha ASC, vi.id ASC`,
+            `WITH k AS (
+                SELECT
+                    m.fecha,
+                    m.id AS ord,
+                    m.producto_id,
+                    p.nombre AS producto_nombre,
+                    m.tipo,
+                    m.cantidad,
+                    m.unidad_medida,
+                    m.usuario,
+                    m.referencia,
+                    CASE WHEN m.tipo = 'EGRESO' THEN -m.cantidad ELSE m.cantidad END AS delta
+                FROM movimientos_productos_inventario m
+                JOIN productos p ON p.id = m.producto_id
+            )
+            SELECT
+                k.fecha,
+                k.producto_id,
+                k.producto_nombre,
+                k.tipo,
+                k.cantidad,
+                k.unidad_medida,
+                k.usuario,
+                k.referencia,
+                SUM(k.delta) OVER (PARTITION BY k.producto_id ORDER BY k.fecha ASC, k.ord ASC) AS saldo
+            FROM k
+            ${where}
+            ORDER BY k.fecha ASC, k.ord ASC`,
             values
         );
         res.json(result.rows);
@@ -3247,20 +3378,28 @@ app.get('/api/dashboard/resumen-mes', async (req, res) => {
             hasta = hasta || hastaMes;
         }
 
-        const resumenRes = await pool.query(
+        const resumenCajaRes = await pool.query(
             `SELECT
-                COALESCE(SUM(CASE WHEN UPPER(TRIM(cm.tipo)) = 'VENTA' THEN cm.monto ELSE 0 END), 0) AS total_ventas,
                 COALESCE(SUM(CASE WHEN UPPER(TRIM(cm.tipo)) = 'EGRESO' THEN cm.monto ELSE 0 END), 0) AS total_gastos,
                 COALESCE(SUM(CASE WHEN UPPER(TRIM(cm.tipo)) = 'INGRESO' THEN cm.monto ELSE 0 END), 0) AS total_ingresos
              FROM caja_movimientos cm
-             WHERE cm.fecha >= $1 AND cm.fecha <= $2`,
+             WHERE cm.fecha >= $1 AND cm.fecha < (DATE($2) + INTERVAL '1 day')`,
+            [String(desde), String(hasta)]
+        );
+
+        const ventasTotalesRes = await pool.query(
+            `SELECT COALESCE(SUM(v.total), 0) AS total_ventas
+             FROM ventas v
+             WHERE v.fecha >= $1
+               AND v.fecha < (DATE($2) + INTERVAL '1 day')
+               AND UPPER(v.estado) = 'PAGADA'`,
             [String(desde), String(hasta)]
         );
 
         const gastosRes = await pool.query(
             `SELECT COALESCE(SUM(gm.monto), 0) AS total_gastos_facturas
              FROM gastos_mensuales gm
-             WHERE gm.fecha >= $1 AND gm.fecha <= $2`,
+             WHERE gm.fecha >= $1 AND gm.fecha < (DATE($2) + INTERVAL '1 day')`,
             [String(desde), String(hasta)]
         );
 
@@ -3268,20 +3407,39 @@ app.get('/api/dashboard/resumen-mes', async (req, res) => {
             `SELECT COALESCE(usuario, 'SIN_USUARIO') AS usuario,
                     COALESCE(SUM(total), 0) AS total
              FROM ventas
-             WHERE fecha >= $1 AND fecha <= $2
+                         WHERE fecha >= $1 AND fecha < (DATE($2) + INTERVAL '1 day')
                AND UPPER(estado) = 'PAGADA'
              GROUP BY COALESCE(usuario, 'SIN_USUARIO')
              ORDER BY total DESC`,
             [String(desde), String(hasta)]
         );
 
-        const resumen = resumenRes.rows[0] || { total_ventas: 0, total_gastos: 0, total_ingresos: 0 };
-        const totalVentas = Number(resumen.total_ventas || 0);
-        const totalGastos = Number(resumen.total_gastos || 0);
-        const totalIngresos = Number(resumen.total_ingresos || 0);
+                const resumenCaja = resumenCajaRes.rows[0] || { total_gastos: 0, total_ingresos: 0 };
+                const totalVentas = Number(ventasTotalesRes.rows?.[0]?.total_ventas || 0);
+                const totalGastos = Number(resumenCaja.total_gastos || 0);
+                const totalIngresos = Number(resumenCaja.total_ingresos || 0);
         const totalGanancias = totalVentas + totalIngresos - totalGastos;
         const totalGastosFacturas = Number(gastosRes.rows?.[0]?.total_gastos_facturas || 0);
-        const totalGananciaReal = totalGanancias - totalGastosFacturas;
+        let totalGananciaReal = totalGanancias - totalGastosFacturas;
+
+        let totalCostoVentas = 0;
+        try {
+            const costoVentasRes = await pool.query(
+                `SELECT COALESCE(SUM(vi.costo_subtotal),0) AS costo
+                 FROM ventas_items vi
+                 JOIN ventas v ON v.id = vi.venta_id
+                 WHERE v.fecha >= $1
+                   AND v.fecha < (DATE($2) + INTERVAL '1 day')
+                   AND UPPER(v.estado) = 'PAGADA'`,
+                [String(desde), String(hasta)]
+            );
+            totalCostoVentas = Number(costoVentasRes.rows[0]?.costo || 0);
+        } catch (e) {
+            // Compatibilidad con backups/versiones antiguas sin columna costo_subtotal.
+            totalCostoVentas = 0;
+        }
+        totalGananciaReal = totalGananciaReal - totalCostoVentas;
+
 
         res.json({
             desde,
@@ -3292,6 +3450,7 @@ app.get('/api/dashboard/resumen-mes', async (req, res) => {
             totalGanancias,
             totalGastosFacturas,
             totalGananciaReal,
+              totalCostoVentas,
             ventasPorUsuario: usuariosRes.rows
         });
     } catch (err) {
@@ -3315,7 +3474,7 @@ app.get('/api/dashboard/analytics-extra', async (req, res) => {
             `SELECT vi.nombre, SUM(vi.cantidad) AS cantidad, SUM(vi.subtotal) AS total
              FROM ventas_items vi
              JOIN ventas v ON v.id = vi.venta_id
-             WHERE v.fecha >= $1 AND v.fecha <= $2 AND UPPER(v.estado) = 'PAGADA'
+             WHERE v.fecha >= $1 AND v.fecha < (DATE($2) + INTERVAL '1 day') AND UPPER(v.estado) = 'PAGADA'
              GROUP BY vi.nombre
              ORDER BY cantidad DESC
              LIMIT 5`,
@@ -3326,7 +3485,7 @@ app.get('/api/dashboard/analytics-extra', async (req, res) => {
         const ventasDiariasRes = await pool.query(
             `SELECT DATE(v.fecha) AS dia, COUNT(*) AS cantidad, COALESCE(SUM(v.total),0) AS total
              FROM ventas v
-             WHERE v.fecha >= $1 AND v.fecha <= $2 AND UPPER(v.estado) = 'PAGADA'
+             WHERE v.fecha >= $1 AND v.fecha < (DATE($2) + INTERVAL '1 day') AND UPPER(v.estado) = 'PAGADA'
              GROUP BY DATE(v.fecha)
              ORDER BY dia ASC`,
             [desdeMes, hastaMes]
@@ -3771,6 +3930,12 @@ function saveSyncConfig(cfg) {
     fs.renameSync(tmp, SYNC_CONFIG_PATH);
 }
 
+function resolveSyncFolder(cfg) {
+    const oneDrivePath = detectOneDrivePath();
+    const defaultLocalFolder = path.join(appDataDir, 'backups');
+    return cfg.backupFolder || (oneDrivePath ? path.join(oneDrivePath, 'Backups_CocoCana') : defaultLocalFolder);
+}
+
 // GET config de sync + detectar OneDrive
 app.get('/api/sync/config', (req, res) => {
     const cfg = getSyncConfig();
@@ -3781,6 +3946,121 @@ app.get('/api/sync/config', (req, res) => {
         oneDriveDetected: oneDrivePath,
         backupFolderResolved: cfg.backupFolder || (oneDrivePath ? path.join(oneDrivePath, 'Backups_CocoCana') : defaultLocalFolder)
     });
+});
+
+// GET diagnóstico de sincronización/restauración entre laptops
+app.get('/api/sync/diagnostico', async (_req, res) => {
+    try {
+        const cfg = getSyncConfig();
+        const oneDrivePath = detectOneDrivePath();
+        const folder = resolveSyncFolder(cfg);
+        const psqlPath = findPgBin('psql.exe');
+        const pgDumpPath = findPgBin('pg_dump.exe');
+
+        if (folder && !fs.existsSync(folder)) {
+            fs.mkdirSync(folder, { recursive: true });
+        }
+
+        let folderWritable = false;
+        try {
+            const probe = path.join(folder, `.diag_${Date.now()}.tmp`);
+            fs.writeFileSync(probe, 'ok', 'utf8');
+            fs.unlinkSync(probe);
+            folderWritable = true;
+        } catch {
+            folderWritable = false;
+        }
+
+        let backups = [];
+        if (folder && fs.existsSync(folder)) {
+            backups = fs.readdirSync(folder)
+                .filter(f => f.startsWith('backup_cococana_') && (f.endsWith('.sql') || f.endsWith('.zip')))
+                .map(f => {
+                    const stats = fs.statSync(path.join(folder, f));
+                    return { nombre: f, size: stats.size, fecha: stats.mtime };
+                })
+                .sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+        }
+
+        const dbInfoRes = await pool.query('SELECT current_database() AS db_actual, current_user AS db_user');
+        const schemaRes = await pool.query(
+            `SELECT
+                to_regclass('public.ventas') IS NOT NULL AS ventas,
+                to_regclass('public.ventas_items') IS NOT NULL AS ventas_items,
+                to_regclass('public.gastos_mensuales') IS NOT NULL AS gastos_mensuales,
+                to_regclass('public.caja_movimientos') IS NOT NULL AS caja_movimientos,
+                to_regclass('public.facturas') IS NOT NULL AS facturas`
+        );
+        const monthRes = await pool.query(
+            `SELECT
+                COALESCE((SELECT SUM(total) FROM ventas
+                          WHERE fecha >= date_trunc('month', now())
+                            AND fecha < (date_trunc('month', now()) + interval '1 month')
+                            AND UPPER(estado) = 'PAGADA'), 0) AS ventas_mes,
+                COALESCE((SELECT SUM(monto) FROM gastos_mensuales
+                          WHERE fecha >= date_trunc('month', now())
+                            AND fecha < (date_trunc('month', now()) + interval '1 month')), 0) AS gastos_mes`
+        );
+        const dbCountRes = await pool.query(
+            `SELECT
+                COUNT(*) FILTER (WHERE datname LIKE 'db_cococana_old_%')::int AS old_count,
+                COUNT(*) FILTER (WHERE datname LIKE 'db_cococana_tmp_%')::int AS tmp_count
+             FROM pg_database`
+        );
+
+        const schema = schemaRes.rows[0] || {};
+        const schemaOk = Boolean(schema.ventas && schema.ventas_items && schema.gastos_mensuales && schema.caja_movimientos && schema.facturas);
+        const psqlOk = Boolean(psqlPath);
+        const pgDumpOk = Boolean(pgDumpPath);
+        const folderExists = Boolean(folder && fs.existsSync(folder));
+        const backupsCount = backups.length;
+
+        const checks = {
+            psqlOk,
+            pgDumpOk,
+            folderExists,
+            folderWritable,
+            schemaOk,
+            backupsCount,
+            backupZipReciente: backupsCount > 0 ? String(backups[0].nombre || '').toLowerCase().endsWith('.zip') : false
+        };
+
+        const warnings = [];
+        if (!psqlOk) warnings.push('psql.exe no encontrado en PostgreSQL/bin.');
+        if (!pgDumpOk) warnings.push('pg_dump.exe no encontrado en PostgreSQL/bin.');
+        if (!folderExists) warnings.push('La carpeta de backups no existe.');
+        if (!folderWritable) warnings.push('La carpeta de backups no tiene permisos de escritura.');
+        if (!schemaOk) warnings.push('Faltan tablas clave para respaldo/restauración.');
+        if (backupsCount === 0) warnings.push('No hay backups disponibles todavía.');
+
+        const aptoRestauracionEntreLaptops = psqlOk && pgDumpOk && folderExists && folderWritable && schemaOk;
+
+        res.json({
+            timestamp: new Date().toISOString(),
+            aptoRestauracionEntreLaptops,
+            checks,
+            warnings,
+            db: {
+                actual: dbInfoRes.rows[0]?.db_actual || null,
+                user: dbInfoRes.rows[0]?.db_user || null,
+                oldCount: Number(dbCountRes.rows[0]?.old_count || 0),
+                tmpCount: Number(dbCountRes.rows[0]?.tmp_count || 0)
+            },
+            mesActual: {
+                ventas: Number(monthRes.rows[0]?.ventas_mes || 0),
+                gastos: Number(monthRes.rows[0]?.gastos_mes || 0)
+            },
+            sync: {
+                oneDriveDetected: oneDrivePath,
+                backupFolder: folder,
+                backupMasReciente: backups[0] || null,
+                totalBackups: backupsCount
+            }
+        });
+    } catch (err) {
+        console.error('Error diagnóstico sync:', err);
+        res.status(500).json({ error: 'No se pudo obtener diagnóstico de sincronización.' });
+    }
 });
 
 // POST guardar config de sync
@@ -3943,6 +4223,24 @@ app.post('/api/sync/restaurar', uploadSql.single('archivo'), async (req, res) =>
         const psqlPath = findPgBin('psql.exe');
         if (!psqlPath) return res.status(500).json({ error: 'psql.exe no encontrado' });
 
+        const detectRestoreType = (filePath, originalName = '') => {
+            const name = String(originalName || '').toLowerCase();
+            const ext = path.extname(name);
+            try {
+                const fd = fs.openSync(filePath, 'r');
+                const header = Buffer.alloc(4);
+                const bytesRead = fs.readSync(fd, header, 0, 4, 0);
+                fs.closeSync(fd);
+
+                const isZipByHeader = bytesRead >= 2 && header[0] === 0x50 && header[1] === 0x4b;
+                if (ext === '.zip' || isZipByHeader) return 'zip';
+                return 'sql';
+            } catch {
+                if (ext === '.zip') return 'zip';
+                return 'sql';
+            }
+        };
+
         let sqlFile = '';
         let extractedUploadsDir = '';
         if (req.file) {
@@ -3959,7 +4257,11 @@ app.post('/api/sync/restaurar', uploadSql.single('archivo'), async (req, res) =>
         }
 
         // Si es ZIP (backup completo), extraemos db.sql y (opcional) uploads/
-        if (String(sqlFile).toLowerCase().endsWith('.zip')) {
+        const restoreType = req.file
+            ? detectRestoreType(sqlFile, req.file.originalname)
+            : (String(sqlFile).toLowerCase().endsWith('.zip') ? 'zip' : 'sql');
+
+        if (restoreType === 'zip') {
             extractedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cococana_restore_'));
             await new Promise((resolve, reject) => {
                 const stream = fs.createReadStream(sqlFile)
@@ -3997,10 +4299,28 @@ app.post('/api/sync/restaurar', uploadSql.single('archivo'), async (req, res) =>
         const psqlAdmin = (sql) => {
             execSync(`"${psqlPath}" -U postgres -h localhost -p 5432 -d postgres -v ON_ERROR_STOP=1 -c "${sql}"`, { env: pgEnv, timeout: 60000 });
         };
+        const listDbByPattern = (pattern) => {
+            try {
+                const raw = execSync(
+                    `"${psqlPath}" -U postgres -h localhost -p 5432 -d postgres -t -A -c "SELECT datname FROM pg_database WHERE datname LIKE '${pattern}';"`,
+                    { env: pgEnv, timeout: 60000 }
+                ).toString();
+                return raw.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+            } catch {
+                return [];
+            }
+        };
 
         // Limpieza previa por si quedó algo a medias
         try { psqlAdmin(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname IN ('db_cococana', '${tmpDb}', '${oldDb}') AND pid <> pg_backend_pid();`); } catch {}
         try { psqlAdmin(`DROP DATABASE IF EXISTS ${tmpDb};`); } catch {}
+        const staleTmp = listDbByPattern('db_cococana_tmp_%');
+        for (const dbName of staleTmp) {
+            try {
+                psqlAdmin(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${dbName}' AND pid <> pg_backend_pid();`);
+                psqlAdmin(`DROP DATABASE IF EXISTS ${dbName};`);
+            } catch {}
+        }
 
         // 1) Crear BD temporal en UTF-8
         psqlAdmin(`CREATE DATABASE ${tmpDb} WITH TEMPLATE template0 ENCODING 'UTF8';`);
@@ -4023,6 +4343,15 @@ app.post('/api/sync/restaurar', uploadSql.single('archivo'), async (req, res) =>
 
         psqlAdmin(`ALTER DATABASE db_cococana RENAME TO ${oldDb};`);
         psqlAdmin(`ALTER DATABASE ${tmpDb} RENAME TO db_cococana;`);
+
+        // Limpiar respaldos de BD antiguos para evitar acumulación de db_cococana_old_*
+        const staleOld = listDbByPattern('db_cococana_old_%').filter((name) => name !== oldDb);
+        for (const dbName of staleOld) {
+            try {
+                psqlAdmin(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${dbName}' AND pid <> pg_backend_pid();`);
+                psqlAdmin(`DROP DATABASE IF EXISTS ${dbName};`);
+            } catch {}
+        }
 
         // 5) Re-abrir pool para seguir funcionando sin reiniciar
         try {

@@ -11,4 +11,7 @@
 2) Construye el instalador:
    - npm run dist
 
+3) Construye instalador con nueva versión automática (recomendado):
+   - npm run dist:versioned
+
 Esto generara el instalador en desktop/dist.

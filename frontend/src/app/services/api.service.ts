@@ -143,6 +143,10 @@ export class ApiService {
     return this.http.post(`${this.apiUrl}/inventario/movimientos`, payload);
   }
 
+  crearMovimientoProductoInventario(payload: any): Observable<any> {
+    return this.http.post(`${this.apiUrl}/inventario/movimientos-producto`, payload);
+  }
+
   crearTransformacionInventario(payload: any): Observable<any> {
     return this.http.post(`${this.apiUrl}/inventario/transformacion`, payload);
   }
@@ -155,6 +159,20 @@ export class ApiService {
       }
     });
     return this.http.get(`${this.apiUrl}/inventario/movimientos`, { params });
+  }
+
+  getMovimientosProductosInventario(query: any = {}): Observable<any> {
+    let params = new HttpParams();
+    Object.entries(query).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') {
+        params = params.set(key, String(value));
+      }
+    });
+    return this.http.get(`${this.apiUrl}/inventario/movimientos-producto`, { params });
+  }
+
+  getSugerenciasInventario(): Observable<any> {
+    return this.http.get(`${this.apiUrl}/inventario/sugerencias`);
   }
 
   getKardexInventario(query: any = {}): Observable<any> {
@@ -462,6 +480,10 @@ export class ApiService {
 
   guardarSyncConfig(payload: any): Observable<any> {
     return this.http.post(`${this.apiUrl}/sync/config`, payload);
+  }
+
+  getSyncDiagnostico(): Observable<any> {
+    return this.http.get(`${this.apiUrl}/sync/diagnostico`);
   }
 
   crearBackup(): Observable<any> {

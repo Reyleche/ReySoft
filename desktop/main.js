@@ -68,6 +68,41 @@ const waitForBackend = (retries = 40, delayMs = 500) => {
   });
 };
 
+const waitForBackendAndDb = (retries = 120, delayMs = 400) => {
+  return new Promise((resolve, reject) => {
+    const attempt = async (left) => {
+      try {
+        const res = await callApi('GET', '/api/health', null, 5000);
+        if (res && res.ok && res.status >= 200 && res.status < 300) {
+          let health = null;
+          try { health = JSON.parse(res.data || '{}'); } catch { health = null; }
+          if (health && health.restoring) {
+            if (left <= 0) return reject(new Error('BD aún restaurando'));
+            return setTimeout(() => attempt(left - 1), delayMs);
+          }
+          if (health && health.dbOk === false) {
+            if (left <= 0) return reject(new Error('BD no lista'));
+            return setTimeout(() => attempt(left - 1), delayMs);
+          }
+          return resolve();
+        }
+      } catch {
+        // ignore
+      }
+
+      // Fallback: backend viejo sin /api/health
+      try {
+        await waitForBackend(1, 200);
+        return resolve();
+      } catch {
+        if (left <= 0) return reject(new Error('Backend no responde'));
+        return setTimeout(() => attempt(left - 1), delayMs);
+      }
+    };
+    attempt(retries);
+  });
+};
+
 const getBackendLogPath = () => {
   return path.join(app.getPath('userData'), 'backend.log');
 };
@@ -207,10 +242,15 @@ const setupPeriodicAutoBackup = () => {
 
 const startBackend = () => {
   const backendPath = getBackendPath();
+  const seedDbSql = app.isPackaged
+    ? path.join(process.resourcesPath, 'seed', 'db.sql')
+    : path.join(__dirname, 'seed', 'db.sql');
   const env = {
     ...process.env,
     ELECTRON_RUN_AS_NODE: '1',
-    REYSOFT_APP_DATA: app.getPath('userData')
+    REYSOFT_APP_DATA: app.getPath('userData'),
+    REYSOFT_RESOURCES_PATH: getResourcesPath(),
+    REYSOFT_SEED_DB_SQL: seedDbSql
   };
   backendProcess = spawn(process.execPath, [backendPath], {
     env,
@@ -235,10 +275,11 @@ const startBackend = () => {
 const createWindow = async () => {
   splashWindow = new BrowserWindow({
     width: 520,
-    height: 320,
+    height: 520,
     resizable: false,
     frame: false,
-    transparent: true,
+    transparent: false,
+    backgroundColor: '#cfb57f',
     alwaysOnTop: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js')
@@ -269,10 +310,13 @@ const createWindow = async () => {
   const uiLog = fs.createWriteStream(getUiLogPath(), { flags: 'a' });
   uiLog.write(`Renderer path: ${rendererPath}\n`);
 
-  const MIN_SPLASH_MS = 5000;
+  const MIN_SPLASH_MS = 1400;
   const splashShownAt = Date.now();
   let mainShowRequested = false;
   let mainShowTimer = null;
+  let uiReadyFallbackTimer = null;
+  let uiReady = false;
+  let backendReady = false;
 
   const closeSplash = () => {
     if (splashWindow && !splashWindow.isDestroyed()) {
@@ -309,16 +353,35 @@ const createWindow = async () => {
     }
   };
 
+  const maybeShowMain = (reason) => {
+    if (!uiReady) return;
+    if (!backendReady) return;
+    showMain(reason);
+  };
+
+  const armUiReadyFallback = () => {
+    if (uiReadyFallbackTimer) return;
+    uiReadyFallbackTimer = setTimeout(() => {
+      if (uiReady && !backendReady) {
+        showMain('ui-ready-fallback');
+      }
+    }, 6000);
+  };
+
   // Si por alguna razón el renderer se queda colgado, no dejamos el splash infinito
   const splashTimeout = setTimeout(() => {
     showMain('timeout');
-  }, 10000);
+  }, 25000);
 
   mainWindow.on('closed', () => {
     clearTimeout(splashTimeout);
     if (mainShowTimer) {
       try { clearTimeout(mainShowTimer); } catch {}
       mainShowTimer = null;
+    }
+    if (uiReadyFallbackTimer) {
+      try { clearTimeout(uiReadyFallbackTimer); } catch {}
+      uiReadyFallbackTimer = null;
     }
     closeSplash();
   });
@@ -327,8 +390,9 @@ const createWindow = async () => {
   mainWindow.webContents.on('dom-ready', () => uiLog.write('UI dom-ready\n'));
   mainWindow.webContents.on('did-finish-load', () => {
     uiLog.write('UI did-finish-load\n');
-    clearTimeout(splashTimeout);
-    showMain('did-finish-load');
+    uiReady = true;
+    armUiReadyFallback();
+    maybeShowMain('did-finish-load');
   });
   mainWindow.webContents.on('did-stop-loading', () => uiLog.write('UI did-stop-loading\n'));
   mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
@@ -372,11 +436,19 @@ const createWindow = async () => {
 
   // Fallback adicional: algunos equipos no disparan ready-to-show de forma confiable
   mainWindow.once('ready-to-show', () => {
-    clearTimeout(splashTimeout);
-    showMain('ready-to-show');
+    uiReady = true;
+    armUiReadyFallback();
+    maybeShowMain('ready-to-show');
   });
 
-  waitForBackend().catch(() => {
+  waitForBackendAndDb().then(() => {
+    backendReady = true;
+    if (uiReadyFallbackTimer) {
+      try { clearTimeout(uiReadyFallbackTimer); } catch {}
+      uiReadyFallbackTimer = null;
+    }
+    maybeShowMain('backend-ready');
+  }).catch(() => {
     const result = dialog.showMessageBoxSync({
       type: 'error',
       buttons: ['Instalar Postgres', 'Cerrar'],
@@ -395,7 +467,9 @@ const createWindow = async () => {
         // Reintentar backend
         try {
           startBackend();
-          await waitForBackend(60, 500);
+          await waitForBackendAndDb(300, 500);
+          backendReady = true;
+          maybeShowMain('backend-ready-after-install');
           setupPeriodicAutoBackup();
         } catch {
           dialog.showErrorBox('Postgres instalado pero backend no responde', 'Revisa backend.log e intenta abrir la app nuevamente.');
@@ -421,7 +495,9 @@ ipcMain.handle('get-onedrive-path', async () => {
 });
 
 // IPC: Impresión silenciosa de recibo
-ipcMain.handle('print-silent', async (_event, html) => {
+ipcMain.handle('print-silent', async (_event, payload) => {
+  const html = typeof payload === 'string' ? payload : String(payload?.html || '');
+  const deviceName = typeof payload === 'object' && payload ? String(payload.deviceName || '').trim() : '';
   return new Promise((resolve) => {
     const printWin = new BrowserWindow({
       show: false,
@@ -432,7 +508,11 @@ ipcMain.handle('print-silent', async (_event, html) => {
     printWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
     printWin.webContents.on('did-finish-load', () => {
       setTimeout(() => {
-        printWin.webContents.print({ silent: true, printBackground: true }, (success, failureReason) => {
+        const options = { silent: true, printBackground: true };
+        if (deviceName) {
+          options.deviceName = deviceName;
+        }
+        printWin.webContents.print(options, (success, failureReason) => {
           printWin.close();
           resolve({ success, failureReason });
         });
